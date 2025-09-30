@@ -5,7 +5,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [5.12.1-35] - 2025-09-15
+
+### Changed
+
+- QNX GPU plugin:
+  - report GPU usage based on max SKU frequency
+  - allow configurable number of GPU processes to track
+
 ### Fixed
+
+- processes2 plugin:
+  - sorting of memory difference logging
 
 ## [5.12.1-34] - 2025-07-24
 

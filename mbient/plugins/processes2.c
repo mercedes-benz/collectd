@@ -1753,30 +1753,27 @@ int sort_vmem_rssdiff(const void *a, const void *b) {
   procstat_t *proc1 = *(procstat_t **)a;
   procstat_t *proc2 = *(procstat_t **)b;
 
-  bool aequ = proc1->vmem_rss == proc1->vmem_rss_last;
-  bool bequ = proc2->vmem_rss == proc2->vmem_rss_last;
+  // Calculate signed differences to determine direction
+  long asigned_diff = (long)proc1->vmem_rss - (long)proc1->vmem_rss_last;
+  long bsigned_diff = (long)proc2->vmem_rss - (long)proc2->vmem_rss_last;
 
-  if (aequ && !bequ)
-    return 1;
-  if (!aequ && bequ)
+  // Calculate absolute differences
+  unsigned long adiff = (asigned_diff >= 0) ? asigned_diff : -asigned_diff;
+  unsigned long bdiff = (bsigned_diff >= 0) ? bsigned_diff : -bsigned_diff;
+
+  // Primary sort: by absolute difference (descending)
+  if (adiff > bdiff)
     return -1;
-
-  bool apos = proc1->vmem_rss > proc1->vmem_rss_last;
-  bool bpos = proc2->vmem_rss > proc2->vmem_rss_last;
-  bool aneg = proc1->vmem_rss < proc1->vmem_rss_last;
-  bool bneg = proc2->vmem_rss < proc2->vmem_rss_last;
-
-  if (apos && bneg)
-    return -1;
-  if (aneg && bpos)
+  if (adiff < bdiff)
     return 1;
 
-  unsigned long adiff = apos ? proc1->vmem_rss - proc1->vmem_rss_last
-                             : proc1->vmem_rss_last - proc1->vmem_rss;
-  unsigned long bdiff = bpos ? proc2->vmem_rss - proc2->vmem_rss_last
-                             : proc2->vmem_rss_last - proc2->vmem_rss;
+  // Secondary sort: when absolute values are equal, positive differences first
+  if (asigned_diff > 0 && bsigned_diff <= 0)
+    return -1;
+  if (asigned_diff <= 0 && bsigned_diff > 0)
+    return 1;
 
-  return NUMERIC_CMP(adiff, bdiff);
+  return 0;
 }
 
 //------------------------------------------------------------------------------

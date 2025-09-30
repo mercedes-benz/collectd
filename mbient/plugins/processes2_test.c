@@ -259,6 +259,7 @@ DEF_TEST(all_processes_pss) {
   return 0;
 }
 
+/* -------------------------------------------------------------------------- */
 DEF_TEST(pretty_size) {
 
   const unsigned long ONE_KILOBYTE = 1ul << 10;
@@ -275,6 +276,45 @@ DEF_TEST(pretty_size) {
 
   p2_pretty_size(buf, sizeof(buf), ONE_GIGABYTE);
   OK(strncmp(buf, "1.0GB", sizeof(buf)) == 0);
+
+  return 0;
+}
+
+/* -------------------------------------------------------------------------- */
+DEF_TEST(memdiff_order) {
+  procstat_t *p1[] = {
+      &(procstat_t){
+          .name = "a", .vmem_rss = 100, .vmem_rss_last = 200}, /* -100 */
+      &(procstat_t){
+          .name = "b", .vmem_rss = 200, .vmem_rss_last = 100}, /*  100 */
+      &(procstat_t){
+          .name = "c", .vmem_rss = 300, .vmem_rss_last = 500}, /* -200 */
+      &(procstat_t){
+          .name = "d", .vmem_rss = 400, .vmem_rss_last = 400}, /*  000 */
+      &(procstat_t){
+          .name = "e", .vmem_rss = 500, .vmem_rss_last = 000}, /*  500 */
+      &(procstat_t){
+          .name = "f", .vmem_rss = 600, .vmem_rss_last = 900}, /* -300 */
+      &(procstat_t){
+          .name = "g", .vmem_rss = 700, .vmem_rss_last = 500}, /*  200 */
+      &(procstat_t){
+          .name = "h", .vmem_rss = 800, .vmem_rss_last = 950}, /* -150 */
+      &(procstat_t){
+          .name = "i", .vmem_rss = 900, .vmem_rss_last = 1400}, /* -500 */
+  };
+
+  size_t p1size = STATIC_ARRAY_SIZE(p1);
+  qsort(p1, p1size, sizeof(procstat_t *), sort_vmem_rssdiff);
+
+  OK(p1[0]->name[0] == 'e'); /* -500 */
+  OK(p1[1]->name[0] == 'i'); /*  500 */
+  OK(p1[2]->name[0] == 'f'); /* -300 */
+  OK(p1[3]->name[0] == 'g'); /*  200 */
+  OK(p1[4]->name[0] == 'c'); /* -200 */
+  OK(p1[5]->name[0] == 'h'); /* -150 */
+  OK(p1[6]->name[0] == 'b'); /*  100 */
+  OK(p1[7]->name[0] == 'a'); /* -100 */
+  OK(p1[8]->name[0] == 'd'); /*    0 */
 
   return 0;
 }
@@ -301,7 +341,8 @@ DEF_TEST(parsing_cmdline) {
   return 0;
 }
 
-/* -------------------------------------------------------------------------- */
+/* --------------------------------------------------------------------------
+ */
 DEF_TEST(process_classification1) {
 
   cdtime_t now = cdtime();
@@ -326,7 +367,8 @@ DEF_TEST(process_classification1) {
   return 0;
 }
 
-/* -------------------------------------------------------------------------- */
+/* --------------------------------------------------------------------------
+ */
 DEF_TEST(process_classification2) {
 
   cdtime_t now = cdtime();
@@ -349,7 +391,8 @@ DEF_TEST(process_classification2) {
   return 0;
 }
 
-/* -------------------------------------------------------------------------- */
+/* --------------------------------------------------------------------------
+ */
 DEF_TEST(process_classification3) {
 
   cdtime_t now = cdtime();
@@ -373,9 +416,11 @@ DEF_TEST(process_classification3) {
   return 0;
 }
 
-/* ************************************************************************** */
+/* **************************************************************************
+ */
 /* main */
-/* ************************************************************************** */
+/* **************************************************************************
+ */
 
 int main(void) {
   RUN_TEST(load_config);
@@ -390,6 +435,7 @@ int main(void) {
   RUN_TEST(process_classification1);
   RUN_TEST(process_classification2);
   RUN_TEST(process_classification3);
+  RUN_TEST(memdiff_order);
 
   printf("failures: %d", fail_count__);
   END_TEST;

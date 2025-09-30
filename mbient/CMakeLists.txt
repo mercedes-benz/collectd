@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 3.0)
 project(collectd)
 
 if (QNX_BUILD_USING_CMAKE)
+    if ("${PRODUCT_LINE}" STREQUAL "i2")
+        set(LAYER_PLATFORM_SERVICES "qnx-services")
+    endif()
     set(COLLECTD_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR})
     set(COLLECTD_BIN_DIR "${CMAKE_BINARY_DIR}/${LAYER_PLATFORM_SERVICES}/collectd")
 

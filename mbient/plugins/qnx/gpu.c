@@ -44,15 +44,27 @@
       __typeof__ (b) _b = (b); \
     _a > _b ? _a : _b; })
 
-#define MAX_GPU_PROCESS 16
 #define MAX_STRING_LEN    128
 #define KGSL_CONTROL_DEV "/dev/kgsl-control"
 #define KGSL_SLOG_BUF_PATTERN "/dev/shmem/slogger2/kgsl.[0-9]*"
-#define GPU_TOTAL_BUSY_REGEX_NUM_MATCHES 2
-#define GPU_TOTAL_BUSY_REGEX "frame.*busy = ([0-9]*\\.[0-9]*)"
+#define GPU_TOTAL_BUSY_REGEX_NUM_MATCHES 3
+#define GPU_TOTAL_BUSY_REGEX "frame.*freq = ([0-9]*\\.[0-9]*).*busy = ([0-9]*\\.[0-9]*)"
 #define GPU_PER_PROCESS_BUSY_REGEX_NUM_MATCHES 5
 #define GPU_PER_PROCESS_BUSY_REGEX "PID:([0-9]*)\\] = '([[:print:]]*)' the GPU busy = ([0-9]*\\.[0-9]*).* CtxtID = ([0-9]*)"
 #define MAX_REGEX_NUM_MATCHES MAX(GPU_TOTAL_BUSY_REGEX_NUM_MATCHES, GPU_PER_PROCESS_BUSY_REGEX_NUM_MATCHES)
+
+#define SKU_DAT_FILE "/dev/shmem/sku.dat"
+/*************** Level IDs *********************************/
+#define LEVEL_INVALID        -1
+#define LEVEL_LS3_PLS         1
+#define LEVEL_LS3_PLS_STAR    2
+#define LEVEL_LS4_PLS         3
+#define LEVEL_LS_OTHER        4
+
+#define LEVEL_LS3_I3          5
+#define LEVEL_LS4_PLS_I3      6
+#define LEVEL_LS4_PLS_PLS_I3  7
+#define LEVEL_LS_OTHER_I3     8
 
 typedef struct {
   int pid;
@@ -63,14 +75,78 @@ typedef struct {
 
 typedef struct {
   double total_gpu_busy;
+  double current_gpu_frequency;
   int num_of_gpu_processes;
   per_process_gpu_busy_t* processes;
 } gpu_busy_t;
+
+static const char *config_keys[] = {"MaxGpuProcesses"};
+static int config_keys_num = STATIC_ARRAY_SIZE(config_keys);
 
 static slog2_log_t kgsl_slog2_handle;
 static regex_t gpu_total_busy_re;
 static regex_t gpu_per_process_busy_re;
 static gpu_busy_t gpu;
+static int gpu_soft_sku_max_frequency = -1;
+static int max_gpu_processes = 32; /* Default value, can be overridden by config */
+
+static int8_t get_soft_sku_level() {
+  int fd = open(SKU_DAT_FILE, O_RDONLY);
+  if (fd < 0) {
+    ERROR("Failed to open %s (error %s)", SKU_DAT_FILE, strerror(errno));
+    return -1;
+  }
+
+  int8_t sku = 0;
+  size_t size_to_read = sizeof(sku);
+  ssize_t bytes_read = read(fd, &sku, sizeof(sku));
+  close(fd);
+
+  if (bytes_read < 0) {
+    ERROR("Failed to read from %s (error %s)", SKU_DAT_FILE, strerror(errno));
+    return -1;
+  } else if (bytes_read != size_to_read) {
+    ERROR("Failed to read %zu bytes from %s, got %zd bytes", size_to_read, SKU_DAT_FILE, bytes_read);
+    return -1;
+  }
+
+  return sku;
+}
+
+static int get_soft_sku_max_frequency() {
+  if (gpu_soft_sku_max_frequency != -1) {
+    return gpu_soft_sku_max_frequency;
+  }
+
+  int8_t level = get_soft_sku_level();
+  if (level < LEVEL_LS3_PLS || level > LEVEL_LS_OTHER_I3) {
+    ERROR("Invalid SKU level %d", level);
+    return -1;
+  }
+
+  /* Below values are based on https://wiki.swf.i.mercedes-benz.com/pages/viewpage.action?pageId=700670052 */
+  switch (level) {
+    case LEVEL_LS3_PLS:
+    case LEVEL_LS4_PLS:
+    case LEVEL_LS3_I3:
+      gpu_soft_sku_max_frequency = 505;
+      break;
+    case LEVEL_LS4_PLS_I3:
+      gpu_soft_sku_max_frequency = 635;
+      break;
+    case LEVEL_LS4_PLS_PLS_I3:
+      gpu_soft_sku_max_frequency = 731;
+      break;
+    case LEVEL_LS_OTHER_I3:
+    default:
+      ERROR("Unknown SKU level %d", level);
+      return -1;
+  }
+
+  INFO("Soft SKU max frequency set to %d", gpu_soft_sku_max_frequency);
+
+  return gpu_soft_sku_max_frequency;
+}
 
 static inline int write_and_verify(int fd, const char* str_to_write) {
   ssize_t bytes_written = 0;
@@ -216,20 +292,41 @@ static int sort_processes_per_gpu_usage(const void* this, const void* other) {
 
 static per_process_gpu_busy_t* get_new_process_entry(gpu_busy_t* gpu) {
   per_process_gpu_busy_t* process = NULL;
-  if (gpu->num_of_gpu_processes < MAX_GPU_PROCESS) {
+  if (gpu->num_of_gpu_processes < max_gpu_processes) {
     process = &gpu->processes[gpu->num_of_gpu_processes++];
   } else {
-    ERROR("Too many processes to track GPU usage. Increase MAX_GPU_PROCESS (%d)!", MAX_GPU_PROCESS);
+    ERROR("Too many processes to track GPU usage. Increase MaxGpuProcesses in config (%d)!", max_gpu_processes);
   }
   return process;
+}
+
+static inline void adjust_gpu_busy_for_max_soft_sku(gpu_busy_t* gpu) {
+  if (gpu->current_gpu_frequency > gpu_soft_sku_max_frequency) {
+    gpu->current_gpu_frequency = gpu_soft_sku_max_frequency;
+  }
+  DEBUG("Current GPU frequency: %.2f", gpu->current_gpu_frequency);
+  DEBUG("Total GPU busy: %.2f", gpu->total_gpu_busy);
+
+  gpu->total_gpu_busy *= (gpu->current_gpu_frequency / gpu_soft_sku_max_frequency);
+  for (int i = 0; i < gpu->num_of_gpu_processes; i++) {
+    per_process_gpu_busy_t* process = &gpu->processes[i];
+    process->gpu_busy *= (gpu->current_gpu_frequency / gpu_soft_sku_max_frequency);
+  }
+  DEBUG("Adjusted total GPU busy: %.2f", gpu->total_gpu_busy);
 }
 
 static void gpu_total_busy_slog2_callback(void* payload, regmatch_t* matches, void* param) {
   char buffer[MAX_STRING_LEN] = {0};
   gpu_busy_t* gpu = (gpu_busy_t*)param;
 
+  memset(buffer, 0, sizeof(buffer));
   memcpy(buffer, (char*)(payload) + matches[1].rm_so, matches[1].rm_eo - matches[1].rm_so);
+  gpu->current_gpu_frequency = atof(buffer);
+
+  memcpy(buffer, (char*)(payload) + matches[2].rm_so, matches[2].rm_eo - matches[2].rm_so);
   gpu->total_gpu_busy = atof(buffer);
+
+  adjust_gpu_busy_for_max_soft_sku(gpu);
 }
 
 static void gpu_per_process_busy_slog2_callback(void* payload, regmatch_t* matches, void* param) {
@@ -361,15 +458,22 @@ static void gpu_notify(gpu_busy_t* gpu) {
 
   plugin_dispatch_notification(&n);
 
-  strncpy(n.message, "GPU top 10 processes - process/GPU usage/CtxtID: ", sizeof(n.message));
+  strncpy(n.message, "GPU top processes - process/GPU usage/CtxtID",  sizeof(n.message));
   for (int i = 0; i < gpu->num_of_gpu_processes; i++) {
-    char temp_string[32] = {0};
+    char temp_string[MAX_STRING_LEN] = {0};
+    int bytes_written;
     per_process_gpu_busy_t *process = &gpu->processes[i];
-    ssnprintf(temp_string, sizeof(temp_string),
-          "%s/%.2f%%/%d; ",
+    bytes_written = ssnprintf(temp_string, sizeof(temp_string),
+          "%s/%.2f%%/%d",
           process->process_name, process->gpu_busy, process->ctxtid);
-
-    strncat(n.message, temp_string, sizeof(n.message) - 1);
+    if (bytes_written < 0 || bytes_written >= sizeof(temp_string)) {
+      ERROR("Failed to write to buffer for GPU top processes notification");
+      return;
+    }
+    if (plugin_notification_meta_add_string(&n, "", temp_string) != 0) {
+      ERROR("Error adding meta information to notification.");
+      break;
+    }
   }
 
   plugin_dispatch_notification(&n);
@@ -380,9 +484,15 @@ static void gpu_notify(gpu_busy_t* gpu) {
 static int gpu_init() {
   int ret = 0;
 
-  gpu.processes = calloc(MAX_GPU_PROCESS, sizeof(per_process_gpu_busy_t));
+  ret = get_soft_sku_max_frequency();
+  if (ret < 0) {
+    ERROR("Failed to get soft SKU max frequency");
+    return ret;
+  }
+
+  gpu.processes = calloc(max_gpu_processes, sizeof(per_process_gpu_busy_t));
   if (gpu.processes == NULL) {
-    ERROR("Failed to allocate memory for GPU processes");
+    ERROR("Failed to allocate memory for %d GPU processes", max_gpu_processes);
     return -1;
   }
 
@@ -408,6 +518,13 @@ static int gpu_init() {
     return ret;
   }
 
+  return 0;
+}
+
+static int gpu_config(char const *key, char const *value) {
+  if (strcasecmp(key, "MaxGpuProcesses") == 0) {
+    max_gpu_processes = atoi(value);
+  }
   return 0;
 }
 
@@ -449,6 +566,7 @@ static int gpu_shutdown() {
 
 void module_register(void) {
   plugin_register_init("gpu", gpu_init);
+  plugin_register_config("gpu", gpu_config, config_keys, config_keys_num);
   plugin_register_read("gpu", gpu_read);
   plugin_register_shutdown("gpu", gpu_shutdown);
 } /* void module_register */
