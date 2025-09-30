@@ -25,6 +25,7 @@
 #define GLOBALS_H
 
 #include <inttypes.h>
+#include <time.h>
 
 #ifndef DATA_MAX_NAME_LEN
 #define DATA_MAX_NAME_LEN 128
@@ -48,4 +49,5 @@ extern char *hostname_g;
 extern cdtime_t interval_g;
 extern int pidfile_from_cli;
 extern int timeout_g;
+extern clockid_t clockid_g;
 #endif /* GLOBALS_H */

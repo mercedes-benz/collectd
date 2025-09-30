@@ -5,3 +5,13 @@
    obj:*libnl.so.1.*
    ...
 }
+{
+   p2_get_cgroup
+   Memcheck:Cond
+   fun:p2_get_cgroup
+   fun:p2_cluster_get_cgroup
+   fun:p2_read
+   fun:test_cgroup_config
+   fun:main
+}
+

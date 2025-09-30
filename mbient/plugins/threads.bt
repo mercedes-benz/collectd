@@ -1,0 +1,7 @@
+#!/usr/bin/env bpftrace
+
+iter:task:threads {
+    if(!ctx->task->exit_state) {
+        printf("%d %d %llu %llu\n", ctx->task->tgid, ctx->task->pid, ctx->task->utime, ctx->task->stime);
+    }
+}

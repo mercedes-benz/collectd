@@ -5,6 +5,7 @@ set -x
 true \
 && rm -f aclocal.m4 \
 && rm -f -r autom4te.cache \
+&& rm -f classnoinst.stamp \
 && rm -f collectd-*.tar.bz2 \
 && rm -f collectd-*.tar.gz \
 && rm -f compile \

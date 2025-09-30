@@ -85,6 +85,7 @@ typedef struct cf_global_option_s {
  */
 static int dispatch_value_typesdb(oconfig_item_t *ci);
 static int dispatch_value_plugindir(oconfig_item_t *ci);
+static int dispatch_value_clocktype(oconfig_item_t *ci);
 static int dispatch_loadplugin(oconfig_item_t *ci);
 static int dispatch_block_plugin(oconfig_item_t *ci);
 
@@ -96,6 +97,7 @@ static cf_complex_callback_t *complex_callback_head;
 
 static cf_value_map_t cf_value_map[] = {{"TypesDB", dispatch_value_typesdb},
                                         {"PluginDir", dispatch_value_plugindir},
+                                        {"ClockType", dispatch_value_clocktype},
                                         {"LoadPlugin", dispatch_loadplugin},
                                         {"Plugin", dispatch_block_plugin}};
 static int cf_value_map_num = STATIC_ARRAY_SIZE(cf_value_map);
@@ -106,6 +108,7 @@ static cf_global_option_t cf_global_options[] = {
     {"Hostname", NULL, 0, NULL},
     {"FQDNLookup", NULL, 0, "true"},
     {"Interval", NULL, 0, NULL},
+    {"ClockType", NULL, 0, NULL},
     {"ReadThreads", NULL, 0, "5"},
     {"WriteThreads", NULL, 0, "5"},
     {"WriteQueueLimitHigh", NULL, 0, NULL},
@@ -113,8 +116,13 @@ static cf_global_option_t cf_global_options[] = {
     {"Timeout", NULL, 0, "2"},
     {"AutoLoadPlugin", NULL, 0, "false"},
     {"CollectInternalStats", NULL, 0, "false"},
+    {"ReadPluginProfiling", NULL, 0, "false"},
+    {"WritePluginProfiling", NULL, 0, "false"},
+    {"DispatchValueProfiling", NULL, 0, "false"},
+    {"DispatchNotificationProfiling", NULL, 0, "false"},
     {"PreCacheChain", NULL, 0, "PreCache"},
     {"PostCacheChain", NULL, 0, "PostCache"},
+    {"NotificationChain", NULL, 0, "Notification"},
     {"MaxReadInterval", NULL, 0, "86400"}};
 static int cf_global_options_num = STATIC_ARRAY_SIZE(cf_global_options);
 
@@ -231,6 +239,46 @@ static int dispatch_global_option(const oconfig_item_t *ci) {
 
   return -1;
 } /* int dispatch_global_option */
+
+static int dispatch_value_clocktype(oconfig_item_t *ci) {
+  assert(strcasecmp(ci->key, "ClockType") == 0);
+
+  if (ci->values_num != 1 || ci->values[0].type != OCONFIG_TYPE_STRING) {
+    ERROR("configfile: The `ClockType' option needs exactly one string "
+          "argument.");
+    return -1;
+  }
+
+  const char *str = ci->values[0].value.string;
+  if (str == NULL)
+    str = "realtime";
+
+  if (strcmp(str, "realtime") == 0) {
+    DEBUG("clock type: realtime");
+    clockid_g = CLOCK_REALTIME;
+  }
+
+  else if (strcmp(str, "monotonic") == 0) {
+    DEBUG("clock type: monotonic");
+    clockid_g = CLOCK_MONOTONIC;
+  }
+
+#ifndef KERNEL_QNX
+  else if (strcmp(str, "boottime") == 0) {
+    DEBUG("clock type: boottime");
+    clockid_g = CLOCK_BOOTTIME;
+  }
+#endif
+
+  else {
+    WARNING("invalid clock type '%s', allowed values are 'realtime', "
+            "'monotonic' and 'boottime', continue with 'realtime'",
+            str);
+    clockid_g = CLOCK_REALTIME;
+  }
+
+  return 0;
+}
 
 static int dispatch_value_typesdb(oconfig_item_t *ci) {
   assert(strcasecmp(ci->key, "TypesDB") == 0);
@@ -814,7 +862,7 @@ static oconfig_item_t *cf_read_generic(const char *path, const char *pattern,
 
   return root;
 } /* oconfig_item_t *cf_read_generic */
-  /* #endif HAVE_WORDEXP_H */
+/* #endif HAVE_WORDEXP_H */
 
 #else  /* if !HAVE_WORDEXP_H */
 static oconfig_item_t *cf_read_generic(const char *path, const char *pattern,

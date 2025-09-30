@@ -2062,6 +2062,8 @@ Collectd utilities
 	--enable-all-plugins=yes \
 	--enable-match_empty_counter \
 	--enable-match_hashed \
+	--enable-match_last_value \
+	--enable-match_other_value \
 	--enable-match_regex \
 	--enable-match_timediff \
 	--enable-match_value \

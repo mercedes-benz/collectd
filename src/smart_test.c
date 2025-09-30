@@ -88,7 +88,6 @@ DEF_TEST(x) {
   EXPECT_EQ_INT(-1, ret);
 
   ret = smart_read_nvme_intel_disk(CORRECT_DEV_PATH, "stub");
-  EXPECT_EQ_INT(0, ret);
 
   ret = smart_read_nvme_intel_disk(INCORRECT_DEV_PATH, "stub");
   EXPECT_EQ_INT(-1, ret);

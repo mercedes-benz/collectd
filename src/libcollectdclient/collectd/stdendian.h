@@ -160,6 +160,13 @@
 #define __BSWAP_DEFINED 1
 #endif
 
+/* QNX */
+#if defined(__QNX__) && defined( __LITTLEENDIAN__ )
+#define _LITTLE_ENDIAN 1234
+#define _BYTE_ORDER  _LITTLE_ENDIAN
+#define __ENDIAN_DEFINED 1
+#endif
+
 /* Unknown */
 #if !__ENDIAN_DEFINED
 #error Could not determine CPU byte order

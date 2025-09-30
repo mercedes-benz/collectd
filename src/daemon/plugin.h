@@ -209,6 +209,16 @@ typedef int (*plugin_cache_event_cb)(cache_event_t *, user_data_t *);
 typedef void (*plugin_log_cb)(int severity, const char *message, user_data_t *);
 typedef int (*plugin_shutdown_cb)(void);
 typedef int (*plugin_notification_cb)(const notification_t *, user_data_t *);
+
+/*
+ * NAME
+ *  plugin_get_daemon_version
+ *
+ * DESCRIPTION
+ *  Returns PACKAGE_VERSION from when the daemon was compiled
+ */
+const char* plugin_get_daemon_version();
+
 /*
  * NAME
  *  plugin_set_dir

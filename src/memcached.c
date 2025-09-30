@@ -47,6 +47,10 @@
 #define MEMCACHED_CONNECT_TIMEOUT 10000
 #define MEMCACHED_IO_TIMEOUT 5000
 
+#if defined(__QNX__)
+#define AI_ADDRCONFIG 0
+#endif
+
 struct prev_s {
   derive_t hits;
   derive_t gets;

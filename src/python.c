@@ -1141,7 +1141,9 @@ static void *cpy_interactive(void *pipefd) {
 #else
   PyOS_AfterFork_Child();
 #endif
+#if PY_VERSION_HEX < 0x03090000
   PyEval_InitThreads();
+#endif
   close(*(int *)pipefd);
   PyRun_InteractiveLoop(stdin, "<stdin>");
   PyOS_setsig(SIGINT, cur_sig);
@@ -1178,7 +1180,9 @@ static int cpy_init(void) {
       ;
     (void)close(pipefd[0]);
   } else {
+#if PY_VERSION_HEX < 0x03090000
     PyEval_InitThreads();
+#endif
     state = PyEval_SaveThread();
   }
   CPY_LOCK_THREADS

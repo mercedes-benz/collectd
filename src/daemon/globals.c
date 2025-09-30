@@ -40,6 +40,11 @@
 char *hostname_g;
 cdtime_t interval_g;
 int timeout_g;
+#ifndef KERNEL_QNX
+clockid_t clockid_g = CLOCK_BOOTTIME;
+#else
+clockid_t clockid_g = CLOCK_REALTIME;
+#endif
 #if HAVE_KSTAT_H
 kstat_ctl_t *kc;
 #endif

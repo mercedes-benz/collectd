@@ -74,6 +74,10 @@
 #define AI_ADDRCONFIG 0
 #endif
 
+#if defined(__QNX__)
+#define AI_ADDRCONFIG 0
+#endif
+
 /* Secure/static macros. They work like `strcpy' and `strcat', but assure null
  * termination. They work for static buffers only, because they use `sizeof'.
  * The `SSTRCATF' combines the functionality of `snprintf' and `strcat' which

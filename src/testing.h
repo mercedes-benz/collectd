@@ -76,6 +76,18 @@ static int check_count__;
     printf("ok %i - %s = \"%s\"\n", ++check_count__, #actual, got__);          \
   } while (0)
 
+#define EXPECT_IN_STR(expect, actual)                                          \
+  do {                                                                         \
+    /* Evaluate 'actual' only once. */                                         \
+    const char *got__ = actual;                                                \
+    if (strstr(got__, expect) == NULL) {                                       \
+      printf("not ok %i - %s = \"%s\", want \"%s\"\n", ++check_count__,        \
+             #actual, got__, expect);                                          \
+      return -1;                                                               \
+    }                                                                          \
+    printf("ok %i - %s = \"%s\"\n", ++check_count__, #actual, got__);          \
+  } while (0)
+
 #define EXPECT_EQ_INT(expect, actual)                                          \
   do {                                                                         \
     int want__ = (int)expect;                                                  \

@@ -25,8 +25,8 @@
  *   Alvaro Barcellos <alvaro.barcellos at gmail.com>
  **/
 
-#include "cmd.h"
 #include "collectd.h"
+#include "cmd.h"
 
 #include "configfile.h"
 #include "plugin.h"
@@ -203,6 +203,19 @@ static void update_kstat(void) {
 } /* static void update_kstat (void) */
 #endif /* HAVE_LIBKSTAT */
 
+#if KERNEL_QNX
+static void unmask_signals(void) {
+  sigset_t sig_mask;
+  (void) sigemptyset(&sig_mask);
+  (void) sigaddset(&sig_mask, SIGTERM);
+  (void) sigaddset(&sig_mask, SIGINT);
+
+  if (sigprocmask(SIG_UNBLOCK, &sig_mask, NULL) != 0) {
+    ERROR("sigprocmask() failed: %s", STRERRNO);
+  }
+}
+#endif /* static void unmask_signals(void) */
+
 __attribute__((noreturn)) static void exit_usage(int status) {
   printf("Usage: " PACKAGE_NAME " [OPTIONS]\n\n"
 
@@ -266,6 +279,12 @@ static int do_init(void) {
 } /* int do_init () */
 
 static int do_loop(void) {
+#if KERNEL_QNX
+  /* Unmask the termination signals here so that this thread will handle
+  them and have any sleep calls interrupted */
+  unmask_signals();
+#endif
+
   cdtime_t interval = cf_get_default_interval();
   cdtime_t wait_until = cdtime() + interval;
 
@@ -343,7 +362,7 @@ static void read_cmdline(int argc, char **argv, struct cmdline_config *config) {
     default:
       exit_usage(EXIT_FAILURE);
     } /* switch (c) */
-  }   /* while (1) */
+  } /* while (1) */
 }
 
 static int configure_collectd(struct cmdline_config *config) {

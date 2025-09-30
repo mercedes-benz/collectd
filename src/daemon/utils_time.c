@@ -45,7 +45,7 @@ cdtime_t cdtime(void) /* {{{ */
   int status;
   struct timespec ts = {0, 0};
 
-  status = clock_gettime(CLOCK_REALTIME, &ts);
+  status = clock_gettime(clockid_g, &ts);
   if (status != 0) {
     ERROR("cdtime: clock_gettime failed: %s", STRERRNO);
     return 0;

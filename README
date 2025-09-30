@@ -59,6 +59,10 @@ Features
     - cgroups
       CPU accounting information for process groups under Linux.
 
+    - cgroups2
+      Enhanced version of CPU accounting information for process groups
+      under Linux.
+
     - chrony
       Chrony daemon statistics: Local clock drift, offset to peers, etc.
 
@@ -73,7 +77,7 @@ Features
 
     - cpu
       CPU utilization: Time spent in the system, user, nice, idle, and related
-      states.
+      states. Collects cpu pressure.
 
     - cpufreq
       CPU frequency (For laptops with speed step or a similar technology)
@@ -261,6 +265,12 @@ Features
       Memory utilization: Memory occupied by running processes, page cache,
       buffer cache and free.
 
+    - memory2
+      Collects richos memory utilization and memory pressure
+
+    - vram
+      Collects richos video ram utilization
+
     - mic
       Collects CPU usage, memory usage, temperatures and power consumption from
       Intel Many Integrated Core (MIC) CPUs.
@@ -371,6 +381,11 @@ Features
 
     - processes
       Process counts: Number of running, sleeping, zombie, ... processes.
+
+    - processes2
+      Process counts: Number of running, sleeping, zombie, ... processes.
+      Extension of processes plugin with more configuration for process ownwers.
+      Either processes or processes2 should be activated at same time.
 
     - procevent
       Listens for process starts and exits via netlink.
@@ -569,6 +584,9 @@ Features
       needed. Please read collectd-unixsock(5) for a description on how that's
       done.
 
+    - write_dlt
+      Use 
+
     - write_graphite
       Sends data to Carbon, the storage layer of Graphite using TCP or UDP. It
       can be configured to avoid logging send errors (especially useful when
@@ -582,8 +600,8 @@ Features
     - write_kafka
       Sends data to Apache Kafka, a distributed queue.
 
-    - write_log
-      Writes data to the log
+    - write_dlt
+      Sends data to Diagnostic Log and Trace (DLT) defined by AUTOSAR.
 
     - write_mongodb
       Sends data to MongoDB, a NoSQL database.
@@ -672,6 +690,12 @@ Features
     - match_hashed
       Match values using a hash function of the hostname.
 
+    - match_last_value
+      Match the values with their previous state.
+
+    - match_other_value
+      Match the values of a pre-defined type.
+
     - match_regex
       Match values by their identifier based on regular expressions.
 
@@ -698,6 +722,10 @@ Features
     - aggregation
       Selects multiple value lists based on patterns or regular expressions
       and creates new aggregated values lists from those.
+
+    - sdnotify
+      Calls systemd sdnotify to report service status, to be used as part
+      of a watchdog operation.
 
     - threshold
       Checks values against configured thresholds and creates notifications if

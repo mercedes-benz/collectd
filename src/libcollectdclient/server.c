@@ -57,6 +57,10 @@
 #define AI_ADDRCONFIG 0
 #endif
 
+#if defined(__QNX__)
+#define AI_ADDRCONFIG 0
+#endif
+
 static bool is_multicast(struct addrinfo const *ai) {
   if (ai->ai_family == AF_INET) {
     struct sockaddr_in *addr = (struct sockaddr_in *)ai->ai_addr;

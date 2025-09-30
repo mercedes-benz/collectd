@@ -51,6 +51,10 @@
 #define AI_ADDRCONFIG 0
 #endif
 
+#if defined(__QNX__)
+#define AI_ADDRCONFIG 0
+#endif
+
 #include "collectd/network.h"
 #include "collectd/network_buffer.h"
 

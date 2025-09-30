@@ -125,6 +125,7 @@ static cache_event_func_t list_cache_event[32];
 
 static fc_chain_t *pre_cache_chain;
 static fc_chain_t *post_cache_chain;
+static fc_chain_t *notification_chain;
 
 static c_avl_tree_t *data_sets;
 
@@ -160,6 +161,23 @@ static long write_limit_low;
 static pthread_mutex_t statistics_lock = PTHREAD_MUTEX_INITIALIZER;
 static derive_t stats_values_dropped;
 static bool record_statistics;
+
+static bool read_profiling = false;
+static cdtime_t read_total_time = 0;
+
+static bool write_profiling = false;
+static cdtime_t write_total_time = 0;
+
+static bool value_profiling = false;
+static cdtime_t value_total_time = 0;
+static absolute_t value_counter = 0;
+static pthread_mutex_t value_stat_lock = PTHREAD_MUTEX_INITIALIZER;
+static absolute_t value_output = 0;
+
+static bool notification_profiling = false;
+static cdtime_t notification_total_time = 0;
+static absolute_t notification_counter = 0;
+static absolute_t notification_output = 0;
 
 /*
  * Static functions
@@ -562,6 +580,26 @@ static void *plugin_read_thread(void __attribute__((unused)) * args) {
 
     /* calculate the time spent in the read function */
     elapsed = (now - start);
+    read_total_time += elapsed;
+    if (read_profiling) {
+      NOTICE("benchmark read %-12s: %.3f ms (read=%7.3f ms, write=%7.3f ms)",
+             rf->rf_name, CDTIME_T_TO_DOUBLE(elapsed) * 1e3,
+             CDTIME_T_TO_DOUBLE(read_total_time) * 1e3,
+             CDTIME_T_TO_DOUBLE(write_total_time) * 1e3);
+    }
+    if (value_profiling) {
+      pthread_mutex_lock(&value_stat_lock);
+      double dispatch_time = CDTIME_T_TO_DOUBLE(value_total_time) * 1e3;
+      absolute_t counter = value_counter;
+      pthread_mutex_unlock(&value_stat_lock);
+
+      absolute_t out = value_counter / 10;
+      if (out != value_output) {
+        value_output = out;
+        NOTICE("benchmark value: %lu values, %.3f ms total, %.3f ms/value",
+               counter, dispatch_time, dispatch_time / counter);
+      }
+    }
 
     if (elapsed > rf->rf_effective_interval)
       WARNING(
@@ -811,8 +849,19 @@ static void *plugin_write_thread(void __attribute__((unused)) * args) /* {{{ */
     if (vl == NULL)
       continue;
 
-    plugin_dispatch_values_internal(vl);
+    if (value_profiling) {
+      cdtime_t now = cdtime();
+      plugin_dispatch_values_internal(vl);
+      cdtime_t elapsed = cdtime() - now;
 
+      /* update statistics */
+      pthread_mutex_lock(&value_stat_lock);
+      value_total_time += elapsed;
+      value_counter++;
+      pthread_mutex_unlock(&value_stat_lock);
+    } else {
+      plugin_dispatch_values_internal(vl);
+    }
     plugin_value_list_free(vl);
   }
 
@@ -901,6 +950,9 @@ static void stop_write_threads(void) /* {{{ */
 /*
  * Public functions
  */
+
+const char *plugin_get_daemon_version() { return PACKAGE_VERSION; }
+
 void plugin_set_dir(const char *dir) {
   sfree(plugindir);
 
@@ -1033,7 +1085,7 @@ int plugin_load(char const *plugin_name, bool global) {
       /* success */
       plugin_mark_loaded(plugin_name);
       ret = 0;
-      INFO("plugin_load: plugin \"%s\" successfully loaded.", plugin_name);
+      DEBUG("plugin_load: plugin \"%s\" successfully loaded.", plugin_name);
       break;
     } else {
       ERROR("plugin_load: Load plugin \"%s\" failed with "
@@ -1642,11 +1694,27 @@ EXPORT int plugin_init_all(void) {
     plugin_register_read("collectd", plugin_update_internal_statistics);
   }
 
+  if (IS_TRUE(global_option_get("ReadPluginProfiling"))) {
+    read_profiling = true;
+  }
+  if (IS_TRUE(global_option_get("WritePluginProfiling"))) {
+    write_profiling = true;
+  }
+  if (IS_TRUE(global_option_get("DispatchValueProfiling"))) {
+    value_profiling = true;
+  }
+  if (IS_TRUE(global_option_get("DispatchNotificationProfiling"))) {
+    notification_profiling = true;
+  }
+
   chain_name = global_option_get("PreCacheChain");
   pre_cache_chain = fc_chain_get_by_name(chain_name);
 
   chain_name = global_option_get("PostCacheChain");
   post_cache_chain = fc_chain_get_by_name(chain_name);
+
+  chain_name = global_option_get("NotificationChain");
+  notification_chain = fc_chain_get_by_name(chain_name);
 
   write_limit_high = global_option_get_long("WriteQueueLimitHigh",
                                             /* default = */ 0);
@@ -1706,6 +1774,21 @@ EXPORT int plugin_init_all(void) {
     }
 
     le = le->next;
+  }
+
+  { // Initialize condition variable attributes with clock settings
+    pthread_condattr_t cond_attr;
+    pthread_condattr_init(&cond_attr);
+
+    if (pthread_condattr_setclock(&cond_attr, clockid_g) != 0) {
+      ERROR("plugin_init_all: pthread_condattr_setclock() failed with '%s'",
+            STRERRNO);
+      ret = -1;
+    }
+
+    pthread_cond_init(&read_cond, &cond_attr);
+    pthread_cond_init(&write_cond, &cond_attr);
+    pthread_condattr_destroy(&cond_attr);
   }
 
   start_write_threads((size_t)write_threads_num);
@@ -1798,6 +1881,7 @@ EXPORT int plugin_write(const char *plugin, /* {{{ */
     }
   }
 
+  cdtime_t now = cdtime();
   if (plugin == NULL) {
     int success = 0;
     int failure = 0;
@@ -1812,6 +1896,7 @@ EXPORT int plugin_write(const char *plugin, /* {{{ */
       plugin_ctx_t old_ctx = plugin_get_ctx();
       plugin_ctx_t ctx = old_ctx;
       ctx.name = cf->cf_ctx.name;
+      plugin = cf->cf_ctx.name;
       plugin_set_ctx(ctx);
 
       DEBUG("plugin: plugin_write: Writing values via %s.", le->key);
@@ -1854,6 +1939,15 @@ EXPORT int plugin_write(const char *plugin, /* {{{ */
     DEBUG("plugin: plugin_write: Writing values via %s.", le->key);
     callback = cf->cf_callback;
     status = (*callback)(ds, vl, &cf->cf_udata);
+  }
+
+  cdtime_t elapsed = cdtime() - now;
+  write_total_time += elapsed;
+  if (write_profiling) {
+    NOTICE("benchmark write %-12s: %7.3f ms (read=%7.3f ms, write=%7.3f ms)",
+           plugin, CDTIME_T_TO_DOUBLE(elapsed) * 1e3,
+           CDTIME_T_TO_DOUBLE(read_total_time) * 1e3,
+           CDTIME_T_TO_DOUBLE(write_total_time) * 1e3);
   }
 
   return status;
@@ -2361,6 +2455,44 @@ EXPORT int plugin_dispatch_notification(const notification_t *notif) {
   if (list_notification == NULL)
     return -1;
 
+  cdtime_t now = cdtime();
+
+  /* Apply notification filter chain if configured */
+  if (notification_chain != NULL) {
+    notification_t n = *notif;
+    data_set_t ds = {0};
+    value_list_t vl = {0};
+
+    /* Convert notification to value_list for filter processing */
+    sstrncpy(vl.host, n.host, sizeof(vl.host));
+    sstrncpy(vl.plugin, n.plugin, sizeof(vl.plugin));
+    sstrncpy(vl.plugin_instance, n.plugin_instance, sizeof(vl.plugin_instance));
+    sstrncpy(vl.type, n.type, sizeof(vl.type));
+    sstrncpy(vl.type_instance, n.type_instance, sizeof(vl.type_instance));
+    vl.time = n.time;
+    vl.interval = 0; /* Notifications don't have intervals */
+    vl.values = NULL;
+    vl.values_len = 0;
+
+    /* Apply filter chain */
+    int status = fc_process_chain(&ds, &vl, notification_chain);
+
+    /* Check if notification should be dropped */
+    if (status == FC_TARGET_STOP) {
+      DEBUG("plugin_dispatch_notification: Notification dropped by filter "
+            "chain.");
+      return 0;
+    }
+
+    /* Copy back any modifications from filter chain */
+    sstrncpy(n.host, vl.host, sizeof(n.host));
+    sstrncpy(n.plugin, vl.plugin, sizeof(n.plugin));
+    sstrncpy(n.plugin_instance, vl.plugin_instance, sizeof(n.plugin_instance));
+    sstrncpy(n.type, vl.type, sizeof(n.type));
+    sstrncpy(n.type_instance, vl.type_instance, sizeof(n.type_instance));
+    n.time = vl.time;
+  }
+
   le = llist_head(list_notification);
   while (le != NULL) {
     callback_func_t *cf;
@@ -2380,6 +2512,19 @@ EXPORT int plugin_dispatch_notification(const notification_t *notif) {
     }
 
     le = le->next;
+  }
+
+  if (notification_profiling) {
+    notification_total_time += cdtime() - now;
+    notification_counter++;
+
+    absolute_t out = notification_counter / 10;
+    if (out != notification_output) {
+      notification_output = out;
+      double elapsed = CDTIME_T_TO_DOUBLE(notification_total_time) * 1e3;
+      NOTICE("benchmark notification: %lu notes, %.3f ms total, %.3f ms/value",
+             notification_counter, elapsed, elapsed / notification_counter);
+    }
   }
 
   return 0;

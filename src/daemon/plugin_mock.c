@@ -35,6 +35,11 @@ kstat_ctl_t *kc = NULL;
 #endif /* HAVE_LIBKSTAT */
 
 char *hostname_g = "example.com";
+clockid_t clockid_g = CLOCK_REALTIME;
+
+const char* plugin_get_daemon_version() {
+  return "1.2.3.4";
+}
 
 void plugin_set_dir(const char *dir) { /* nop */
 }
@@ -244,3 +249,12 @@ int plugin_thread_create(__attribute__((unused)) pthread_t *thread,
  * would be to hard-code the top-level config keys in daemon/collectd.c to avoid
  * having these references in daemon/configfile.c. */
 int fc_configure(const oconfig_item_t *ci) { return ENOTSUP; }
+
+int parse_log_severity(const char *severity) {
+  return ENOTSUP;
+}
+
+int plugin_register_log(const char *name, plugin_log_cb callback,
+                               user_data_t const *ud) {
+return ENOTSUP;
+}

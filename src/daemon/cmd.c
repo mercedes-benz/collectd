@@ -163,7 +163,30 @@ static int notify_systemd(void) {
 }
 #endif /* KERNEL_LINUX */
 
+#ifdef KERNEL_QNX
+static void mask_signals(void) {
+  sigset_t sig_mask;
+  (void) sigemptyset(&sig_mask);
+  (void) sigaddset(&sig_mask, SIGTERM);
+  (void) sigaddset(&sig_mask, SIGINT);
+
+  if (sigprocmask(SIG_BLOCK, &sig_mask, NULL) != 0) {
+    ERROR("sigprocmask() failed: %s", STRERRNO);
+  }
+}
+#endif /* static void mask_signals(void) */
+
 int main(int argc, char **argv) {
+
+#ifdef KERNEL_QNX
+  /* Before anything block all signals. The mask is inherited at fork 
+  and by new threads. The signals will be unmasked in the loop thread.
+  This is done in order to have the signals delivered to the loop thread
+  and interrupt any sleep calls allowing for a quicker termination of 
+  the process */
+  mask_signals();
+#endif
+
   struct cmdline_config config = init_config(argc, argv);
 
 #if COLLECT_DAEMON

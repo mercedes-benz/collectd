@@ -52,6 +52,9 @@ threshold_t *threshold_get(const char *hostname, const char *plugin,
   char name[6 * DATA_MAX_NAME_LEN];
   threshold_t *th = NULL;
 
+  if (threshold_tree == NULL)
+    return NULL;
+
   format_name(name, sizeof(name), (hostname == NULL) ? "" : hostname,
               (plugin == NULL) ? "" : plugin, plugin_instance,
               (type == NULL) ? "" : type, type_instance);

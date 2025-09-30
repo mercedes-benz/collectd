@@ -1,0 +1,4 @@
+process         pid:COUNTER:0:U, percent_cpu:GAUGE:0:U, memory:COUNTER:0:U
+thread          tid:COUNTER:0:U, pid:COUNTER:0:U, percent_cpu:GAUGE:0:U
+gpu_process     pid:COUNTER:0:U, percent_gpu:GAUGE:0:U
+carveout        total:COUNTER:0:U, free:COUNTER:0:U

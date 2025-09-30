@@ -5129,6 +5129,10 @@ percent of physical memory used. Defaults to B<false>.
 This is useful for deploying I<collectd> in a heterogeneous environment in
 which the sizes of physical memory vary.
 
+=item B<ExtraStats> B<false>|B<true>
+
+Enables or disables reporting of additional memory statistics: B<available>, B<anon_pages>, B<mapped> and B<shmem>. Defaults to B<false>.
+
 =back
 
 =head2 Plugin C<modbus>
@@ -5478,7 +5482,7 @@ C<Bytes_{received,sent}>, C<Com_*>, C<Handler_*>, C<Qcache_*> and C<Threads_*>
 return values. Please refer to the B<MySQL reference manual>, I<5.1.6. Server
 Status Variables> for an explanation of these values.
 
-Optionally, master and slave statistics may be collected in a MySQL
+Optionally, primary and replica statistics may be collected in a MySQL
 replication setup. In that case, information about the synchronization state
 of the nodes are collected by evaluating the C<Position> return value of the
 C<SHOW MASTER STATUS> command and the C<Seconds_Behind_Master>,
@@ -5580,7 +5584,7 @@ Disabled by default.
 
 =item B<SlaveStats> I<true|false>
 
-Enable the collection of master / slave statistics in a replication setup. In
+Enable the collection of primary / replica statistics in a replication setup. In
 order to be able to get access to these statistics, the user needs special
 privileges. See the B<User> documentation above. Defaults to B<false>.
 
@@ -8852,8 +8856,8 @@ The C<smart> plugin collects SMART information from physical
 disks. Values collectd include temperature, power cycle count, poweron
 time and bad sectors. Also, all SMART attributes are collected along
 with the normalized current value, the worst value, the threshold and
-a human readable value. The plugin can also collect SMART attributes
-for NVMe disks (present in accordance with NVMe 1.4 spec) and Additional
+a human readable value. The plugin can also collect SMART attributes 
+for NVMe disks (present in accordance with NVMe 1.4 spec) and Additional 
 SMART Attributes from Intel® NVMe disks.
 
 Using the following two options you can ignore some disks or configure the
@@ -10672,6 +10676,37 @@ traffic (e.E<nbsp>g. due to headers and retransmission). If you want to
 collect on-wire traffic you could, for example, use the logging facilities of
 iptables to feed data for the guest IPs into the iptables plugin.
 
+=head2 Plugin C<write_dlt>
+
+The C<write_dlt> plugin send metrics as INFO messages to Diagnostic Log 
+and Trace daemon.
+
+This plugin supports two output formats: I<Graphite> and I<JSON>.
+
+Synopsis:
+
+ <Plugin write_dlt>
+   <DLT>
+     AppID ABCD
+   </DLT>
+   Format Graphite
+ </Plugin>
+
+=over 4
+
+=item B<Format> I<Format>
+
+The output format to use. Can be one of C<Graphite> or C<JSON>.
+
+=item B<AppID> I<id>
+
+Customization of application identifier used for tagging DLT messages. 
+By default the value is set to "CLTD". Because of the DLG standard, 
+please note that only the first four characters are used for the ID. 
+
+=back
+
+
 =head2 Plugin C<write_graphite>
 
 The C<write_graphite> plugin writes data to I<Graphite>, an open-source metrics
@@ -10851,7 +10886,7 @@ The output format to use. Can be one of C<Graphite> or C<JSON>.
 =head2 Plugin C<write_tsdb>
 
 The C<write_tsdb> plugin writes data to I<OpenTSDB>, a scalable open-source
-time series database. The plugin connects to a I<TSD>, a masterless, no shared
+time series database. The plugin connects to a I<TSD>, a leaderless, no shared
 state daemon that ingests metrics and stores them in HBase. The plugin uses
 I<TCP> over the "line based" protocol with a default port 4242. The data will
 be sent in blocks of at most 1428 bytes to minimize the number of network
@@ -12703,6 +12738,25 @@ Example:
    Invert true
    Satisfy "Any"
  </Match>
+
+=item B<last_value>
+
+Matches the actual value of data sources against the previous state.
+
+Available options:
+
+=over 4
+
+=item B<DiffAbs> I<Value>
+
+Sets the maximal difference between the previous value and the current one.
+
+=item B<DiffRel> I<Value>
+
+Sets the maximal relative difference determined as the quotient of the 
+absolute difference and the previous value
+
+=back
 
 =item B<empty_counter>
 

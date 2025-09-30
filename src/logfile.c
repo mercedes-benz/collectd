@@ -161,6 +161,13 @@ static int logfile_notification(const notification_t *n,
   char *buf_ptr = buf;
   int buf_len = sizeof(buf);
   int status;
+  int severity = n->severity == NOTIF_FAILURE ? LOG_ERR : 
+                 n->severity == NOTIF_WARNING ? LOG_WARNING :
+                 n->severity == NOTIF_OKAY ? LOG_INFO :
+                 LOG_DEBUG;
+
+  if (severity > log_level)
+    return 0;
 
   status = snprintf(
       buf_ptr, buf_len, "Notification: severity = %s",
@@ -191,7 +198,7 @@ static int logfile_notification(const notification_t *n,
 
   buf[sizeof(buf) - 1] = '\0';
 
-  logfile_print(buf, LOG_INFO, (n->time != 0) ? n->time : cdtime());
+  logfile_print(buf, severity, (n->time != 0) ? n->time : cdtime());
 
   return 0;
 } /* int logfile_notification */

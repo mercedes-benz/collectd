@@ -1,0 +1,16 @@
+sdbus_count             unique:GAUGE:0:U, acquired:GAUGE:0:U, activatable:GAUGE:0:U
+sdbus_latency           value:GAUGE:0:U
+sdbus_messages          value:DERIVE:0:U
+ps_pss                  value:GAUGE:0:9223372036854775807
+ps_cpu_rank             user:GAUGE:0:U, syst:GAUGE:0:U, total:GAUGE:0:U
+ps_cpu_percent          user:GAUGE:0:U, syst:GAUGE:0:U, total:GAUGE:0:U
+cg_cputime              user:DERIVE:0:U, syst:DERIVE:0:U
+cg_cpu_percent          user:GAUGE:0:U, syst:GAUGE:0:U, total:GAUGE:0:U
+cg_memory               usage:GAUGE:0:U, peak:GAUGE:0:U, limit:GAUGE:0:U
+cg_pressure             some_total:GAUGE:0:U, some_pressure:GAUGE:0:U
+
+# from QNX/SafeOS
+process                 pid:COUNTER:0:U, percent_cpu:GAUGE:0:U, memory:COUNTER:0:U
+thread                  tid:COUNTER:0:U, pid:COUNTER:0:U, percent_cpu:GAUGE:0:U
+gpu_process             pid:COUNTER:0:U, percent_gpu:GAUGE:0:U
+carveout                total:COUNTER:0:U, free:COUNTER:0:U

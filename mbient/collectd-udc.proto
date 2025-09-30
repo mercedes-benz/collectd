@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package collectd;
+
+message CollectdData { repeated CollectdHost host = 10; }
+
+// Where
+message CollectdHost {
+  string host_name = 1; // example: "idc"
+  repeated CollectdPlugin plugin = 10;
+}
+
+message CollectdPlugin {
+  string plugin_name = 1; // example: "cpu"
+  repeated CollectdPluginInstance plugin_instance = 10;
+}
+
+message CollectdPluginInstance {
+  string plugin_instance_name = 1; // example: "core-0"
+  repeated CollectdType type = 10;
+}
+
+// What
+message CollectdType {
+  string type_name = 1; // example: "percent"
+  repeated CollectdTypeInstance type_instance = 10;
+}
+
+message CollectdTypeInstance {
+  string type_instance_name = 1; // example: "user"
+  uint64 utc_timestamp_ms =
+      2; // timestamp (remark: historical values are supported due to "repeated
+         // CollectdTypeInstance")
+  repeated CollectdValue value = 10;
+}
+
+message CollectdValue {
+  string value_name =
+      1; // ("value"|"user"|"syst"|"total"|...), see also
+         // https://git.swf.daimler.com/mbient/meta-mbient/-/blob/dunfell/meta-mbient/recipes-appends/collectd/files/types.db.mbient
+         // and https://collectd.org/documentation/manpages/types.db.5.shtml
+  double value = 10; // measured value
+}

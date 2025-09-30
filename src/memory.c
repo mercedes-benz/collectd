@@ -68,7 +68,7 @@ static mach_port_t port_host;
 static vm_size_t pagesize;
 /* #endif HAVE_HOST_STATISTICS */
 
-#elif HAVE_SYSCTLBYNAME
+#elif HAVE_SYSCTLBYNAME && !defined(__QNX__)
 #if HAVE_SYSCTL && defined(KERNEL_NETBSD)
 static int pagesize;
 #include <unistd.h> /* getpagesize() */
@@ -98,6 +98,16 @@ static int pagesize;
 #elif HAVE_PERFSTAT
 static int pagesize;
 /* endif HAVE_PERFSTAT */
+#elif defined(__QNX__)
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+#include <dlfcn.h>
+#include <sys/syspage.h>
+#include <sys/stat.h>
+#include <string.h>
+#include <stdint.h>
+/* endif __QNX__ */
 #else
 #error "No applicable input method."
 #endif
@@ -106,8 +116,39 @@ static int pagesize;
 #include <uvm/uvm_extern.h>
 #endif
 
+#if defined(__QNX__)
+struct stats_memory_instance_t {
+  gauge_t mem_total;
+  gauge_t mem_used;
+  gauge_t mem_free;
+};
+
+typedef struct stats_memory_instance_t* stats_memory_t;
+
+stats_memory_t stats_memory_create() {
+    stats_memory_t instance = calloc(1, sizeof(struct  stats_memory_instance_t));
+
+    if (!instance) {
+	instance->mem_total = 0;
+	instance->mem_used = 0;
+	instance->mem_free = 0;
+
+	return NULL;
+    }
+    return instance;
+}
+
+void stats_memory_destroy(stats_memory_t instance) {
+    if (instance)
+        free(instance);
+}
+
+stats_memory_t g_instance;
+#endif
+
 static bool values_absolute = true;
 static bool values_percentage;
+static bool extra_stats = false;
 
 static int memory_config(oconfig_item_t *ci) /* {{{ */
 {
@@ -117,6 +158,8 @@ static int memory_config(oconfig_item_t *ci) /* {{{ */
       cf_util_get_boolean(child, &values_absolute);
     else if (strcasecmp("ValuesPercentage", child->key) == 0)
       cf_util_get_boolean(child, &values_percentage);
+    else if (strcasecmp("ExtraStats", child->key) == 0)
+      cf_util_get_boolean(child, &extra_stats);
     else
       ERROR("memory plugin: Invalid configuration option: "
             "\"%s\".",
@@ -132,7 +175,7 @@ static int memory_init(void) {
   host_page_size(port_host, &pagesize);
   /* #endif HAVE_HOST_STATISTICS */
 
-#elif HAVE_SYSCTLBYNAME
+#elif HAVE_SYSCTLBYNAME && !defined(__QNX__)
 #if HAVE_SYSCTL && defined(KERNEL_NETBSD)
   pagesize = getpagesize();
 #else
@@ -173,7 +216,16 @@ static int memory_init(void) {
 
 #elif HAVE_PERFSTAT
   pagesize = getpagesize();
-#endif /* HAVE_PERFSTAT */
+/*endif  HAVE_PERFSTAT */
+#elif defined(__QNX__)
+/* QNX memory_init */
+  g_instance = stats_memory_create();
+  if (!g_instance) {
+    ERROR("memory plugin: Failed to allocate memory");
+    return -1;
+  }
+/* endif __QNX__ */
+#endif
   return 0;
 } /* int memory_init */
 
@@ -184,6 +236,37 @@ static int memory_init(void) {
     if (values_percentage)                                                     \
       plugin_dispatch_multivalue(vl, true, DS_TYPE_GAUGE, __VA_ARGS__, NULL);  \
   } while (0)
+
+#if defined(__QNX__)
+/*QNX total memory calculation*/
+uint64_t calculate_total_physical_memory()
+{
+  struct asinfo_entry *entries = SYSPAGE_ENTRY(asinfo);
+  size_t count = SYSPAGE_ENTRY_SIZE(asinfo) / sizeof(struct asinfo_entry);
+  char *strings = SYSPAGE_ENTRY(strings)->data;
+
+  uint64_t total = 0;
+  size_t i;
+  for (i = 0; i < count; i++) {
+	  struct asinfo_entry *entry = &entries[i];
+	  if (strcmp(strings + entry->name, "ram") == 0) {
+		  total += entry->end - entry->start + 1;
+	  }
+  }
+  return total;
+}
+
+/*QNX free memory calculation*/
+paddr_t calculate_free_memory()
+{
+  struct stat statbuf;
+  paddr_t freemem;
+  stat( "/proc", &statbuf );
+  freemem = (paddr_t)statbuf.st_size;
+
+  return freemem;
+}
+#endif
 
 static int memory_read_internal(value_list_t *vl) {
 #if HAVE_HOST_STATISTICS
@@ -237,7 +320,7 @@ static int memory_read_internal(value_list_t *vl) {
                 free);
   /* #endif HAVE_HOST_STATISTICS */
 
-#elif HAVE_SYSCTLBYNAME
+#elif HAVE_SYSCTLBYNAME && !defined(__QNX__)
 
 #if HAVE_SYSCTL && defined(KERNEL_NETBSD)
   int mib[] = {CTL_VM, VM_UVMEXP2};
@@ -329,6 +412,10 @@ static int memory_read_internal(value_list_t *vl) {
   gauge_t mem_buffered = 0;
   gauge_t mem_cached = 0;
   gauge_t mem_free = 0;
+  gauge_t mem_available = 0;
+  gauge_t mem_anon_pages = 0;
+  gauge_t mem_mapped = 0;
+  gauge_t mem_shmem = 0;
   gauge_t mem_slab_total = 0;
   gauge_t mem_slab_reclaimable = 0;
   gauge_t mem_slab_unreclaimable = 0;
@@ -349,6 +436,14 @@ static int memory_read_internal(value_list_t *vl) {
       val = &mem_buffered;
     else if (strncasecmp(buffer, "Cached:", 7) == 0)
       val = &mem_cached;
+    else if (strncasecmp(buffer, "MemAvailable:", 13) == 0)
+      val = &mem_available;
+    else if (strncasecmp(buffer, "AnonPages:", 10) == 0)
+      val = &mem_anon_pages;
+    else if (strncasecmp(buffer, "Mapped:", 7) == 0)
+      val = &mem_mapped;
+    else if (strncasecmp(buffer, "Shmem:", 6) == 0)
+      val = &mem_shmem;
     else if (strncasecmp(buffer, "Slab:", 5) == 0)
       val = &mem_slab_total;
     else if (strncasecmp(buffer, "SReclaimable:", 13) == 0) {
@@ -388,7 +483,11 @@ static int memory_read_internal(value_list_t *vl) {
   else
     MEMORY_SUBMIT("used", mem_used, "buffered", mem_buffered, "cached",
                   mem_cached, "free", mem_free, "slab", mem_slab_total);
-    /* #endif KERNEL_LINUX */
+  if (extra_stats)
+    MEMORY_SUBMIT("available", mem_available, "anon_pages", mem_anon_pages,
+                  "mapped", mem_mapped, "shmem", mem_shmem);
+
+  /* #endif KERNEL_LINUX */
 
 #elif HAVE_LIBKSTAT
   /* Most of the additions here were taken as-is from the k9toolkit from
@@ -520,8 +619,18 @@ static int memory_read_internal(value_list_t *vl) {
                 (gauge_t)(pmemory.numperm * pagesize), "system",
                 (gauge_t)(pmemory.real_system * pagesize), "user",
                 (gauge_t)(pmemory.real_process * pagesize));
-#endif /* HAVE_PERFSTAT */
+/* #endif HAVE_PERFSTAT */
+#elif defined(__QNX__)
+/* QNX memory_read */
+  uint64_t free_memory = (uint64_t)calculate_free_memory();
+  uint64_t total_memory = calculate_total_physical_memory();
 
+  g_instance->mem_free =  free_memory;
+  g_instance->mem_total = total_memory;
+  g_instance->mem_used = g_instance->mem_total - g_instance->mem_free;
+
+  MEMORY_SUBMIT("used", g_instance->mem_used, "free", g_instance->mem_free);
+#endif
   return 0;
 } /* }}} int memory_read_internal */
 
@@ -539,8 +648,16 @@ static int memory_read(void) /* {{{ */
   return memory_read_internal(&vl);
 } /* }}} int memory_read */
 
+static int memory_shutdown(void) {
+#if defined(__QNX__)
+  stats_memory_destroy(g_instance);
+#endif
+  return 0;
+}
+
 void module_register(void) {
   plugin_register_complex_config("memory", memory_config);
   plugin_register_init("memory", memory_init);
   plugin_register_read("memory", memory_read);
+  plugin_register_shutdown("memory", memory_shutdown);
 } /* void module_register */

@@ -655,6 +655,9 @@ cu_mount_t *cu_mount_getlist(cu_mount_t **list) {
   new = cu_mount_getmntent();
 #elif HAVE_ONE_GETMNTENT
   new = cu_mount_getmntent();
+#elif defined(__QNX__)
+  DEBUG("QNX: `getmntent' is not implemented!");
+  /* Refer http://www.qnx.com/developers/docs/7.0.0/#com.qnx.doc.neutrino.lib_ref/topic/m/mount.html */
 #else
 #error "Could not determine how to find mountpoints."
 #endif

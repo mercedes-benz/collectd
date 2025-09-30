@@ -96,6 +96,7 @@ dist_man_MANS = \
 	src/types.db.5
 
 
+if BUILD_CLIENT_LIBRARY
 nodist_pkgconfig_DATA = \
 	src/libcollectdclient/libcollectdclient.pc
 
@@ -109,6 +110,7 @@ pkginclude_HEADERS = \
 	src/libcollectdclient/collectd/types.h
 
 lib_LTLIBRARIES = libcollectdclient.la
+endif
 
 if BUILD_WIN32
 # TODO: Build all executables on Windows as well.
@@ -589,8 +591,8 @@ liboconfig_la_SOURCES = \
 	src/liboconfig/oconfig.c \
 	src/liboconfig/oconfig.h \
 	src/liboconfig/aux_types.h \
-	src/liboconfig/scanner.l \
-	src/liboconfig/parser.y
+	$(srcdir)/src/liboconfig/scanner.l \
+  $(srcdir)/src/liboconfig/parser.y
 liboconfig_la_CPPFLAGS = -I$(srcdir)/src/liboconfig $(AM_CPPFLAGS)
 liboconfig_la_LDFLAGS = -avoid-version $(LEXLIB)
 
@@ -814,6 +816,35 @@ cgroups_la_LDFLAGS = $(PLUGIN_LDFLAGS)
 cgroups_la_LIBADD = libignorelist.la libmount.la
 endif
 
+if BUILD_PLUGIN_CGROUPS2
+pkglib_LTLIBRARIES += cgroups2.la
+cgroups2_la_SOURCES = mbient/plugins/cgroups2.c
+cgroups2_la_LDFLAGS = $(PLUGIN_LDFLAGS) -lm
+cgroups2_la_LIBADD = libignorelist.la libmount.la
+
+
+test_plugin_cgroups2_SOURCES = mbient/plugins/cgroups2_test.c \
+  src/daemon/configfile.c src/daemon/types_list.c
+test_plugin_cgroups2_CFLAGS = $(AM_CFLAGS) $(BUILD_WITH_LIBSYSTEMD_CFLAGS)
+test_plugin_cgroups2_LDFLAGS = $(cgroups2_la_LDFLAGS) $(BUILD_WITH_LIBSYSTEMD_LDFLAGS)
+test_plugin_cgroups2_LDADD = \
+  libavltree.la \
+  libmount.la \
+  liboconfig.la \
+  libplugin_mock.la \
+  libmetadata.la \
+  $(BUILD_WITH_LIBSYSTEMD_LIBS)
+check_PROGRAMS += test_plugin_cgroups2
+TESTS += test_plugin_cgroups2
+
+endif
+
+thread_demo_SOURCES = mbient/tools/thread_demo.cpp
+if !BUILD_QNX
+thread_demo_LDADD = -lpthread
+endif
+noinst_PROGRAMS = thread_demo
+
 if BUILD_PLUGIN_CHRONY
 pkglib_LTLIBRARIES += chrony.la
 chrony_la_SOURCES = src/chrony.c
@@ -854,7 +885,11 @@ endif
 
 if BUILD_PLUGIN_CPU
 pkglib_LTLIBRARIES += cpu.la
-cpu_la_SOURCES = src/cpu.c
+if BUILD_QNX
+cpu_la_SOURCES = mbient/plugins/qnx/cpu.c
+else
+cpu_la_SOURCES = mbient/plugins/cpu.c
+endif
 cpu_la_CFLAGS = $(AM_CFLAGS)
 cpu_la_LDFLAGS = $(PLUGIN_LDFLAGS)
 cpu_la_LIBADD =
@@ -871,6 +906,12 @@ endif
 if BUILD_WITH_PERFSTAT
 cpu_la_LIBADD += -lperfstat
 endif
+test_plugin_cpu_SOURCES = mbient/plugins/cpu_test.c
+test_plugin_cpu_CFLAGS = $(AM_FLAGS)
+test_plugin_cpu_LDFLAGS = $(PLUGIN_LDFLAGS)
+test_plugin_cpu_LDADD = libplugin_mock.la
+check_PROGRAMS += test_plugin_cpu
+TESTS += test_plugin_cpu
 endif
 
 if BUILD_PLUGIN_CPUFREQ
@@ -1095,6 +1136,15 @@ gps_la_SOURCES = src/gps.c
 gps_la_CFLAGS = $(AM_CFLAGS) $(BUILD_WITH_LIBGPS_CFLAGS)
 gps_la_LDFLAGS = $(PLUGIN_LDFLAGS) $(BUILD_WITH_LIBGPS_LDFLAGS)
 gps_la_LIBADD = -lpthread $(BUILD_WITH_LIBGPS_LIBS)
+endif
+
+if BUILD_QNX
+if BUILD_PLUGIN_GPU
+pkglib_LTLIBRARIES += gpu.la
+gpu_la_SOURCES = mbient/plugins/qnx/gpu.c
+gpu_la_LDFLAGS = $(PLUGIN_LDFLAGS)
+gpu_la_LIBADD = -lregex -lslog2parse
+endif
 endif
 
 if BUILD_PLUGIN_GPU_NVIDIA
@@ -1354,6 +1404,9 @@ if BUILD_PLUGIN_MATCH_REGEX
 pkglib_LTLIBRARIES += match_regex.la
 match_regex_la_SOURCES = src/match_regex.c
 match_regex_la_LDFLAGS = $(PLUGIN_LDFLAGS)
+if BUILD_QNX
+match_regex_la_LIBADD = -lregex
+endif
 endif
 
 if BUILD_PLUGIN_MATCH_TIMEDIFF
@@ -1366,6 +1419,18 @@ if BUILD_PLUGIN_MATCH_VALUE
 pkglib_LTLIBRARIES += match_value.la
 match_value_la_SOURCES = src/match_value.c
 match_value_la_LDFLAGS = $(PLUGIN_LDFLAGS)
+endif
+
+if BUILD_PLUGIN_MATCH_LAST_VALUE
+pkglib_LTLIBRARIES += match_last_value.la
+match_last_value_la_SOURCES = mbient/plugins/match_last_value.c
+match_last_value_la_LDFLAGS = $(PLUGIN_LDFLAGS)
+endif
+
+if BUILD_PLUGIN_MATCH_OTHER_VALUE
+pkglib_LTLIBRARIES += match_other_value.la
+match_other_value_la_SOURCES = mbient/plugins/match_other_value.c
+match_other_value_la_LDFLAGS = $(PLUGIN_LDFLAGS)
 endif
 
 if BUILD_PLUGIN_MBMON
@@ -1429,7 +1494,11 @@ endif
 
 if BUILD_PLUGIN_MEMORY
 pkglib_LTLIBRARIES += memory.la
+if BUILD_QNX
+memory_la_SOURCES = mbient/plugins/qnx/memory.c
+else
 memory_la_SOURCES = src/memory.c
+endif
 memory_la_CFLAGS = $(AM_CFLAGS)
 memory_la_LDFLAGS = $(PLUGIN_LDFLAGS)
 memory_la_LIBADD =
@@ -1446,6 +1515,30 @@ endif
 if BUILD_WITH_PERFSTAT
 memory_la_LIBADD += -lperfstat
 endif
+endif
+
+if BUILD_PLUGIN_MEMORY2
+pkglib_LTLIBRARIES += memory2.la
+memory2_la_SOURCES = mbient/plugins/memory2.c
+memory2_la_CFLAGS = $(AM_CFLAGS)
+memory2_la_LDFLAGS = $(PLUGIN_LDFLAGS)
+endif
+
+if BUILD_PLUGIN_VRAM
+pkglib_LTLIBRARIES += vram.la
+vram_la_SOURCES = mbient/plugins/vram.c
+vram_la_CFLAGS = $(AM_CFLAGS)
+vram_la_LDFLAGS = $(PLUGIN_LDFLAGS)
+
+test_plugin_vram_SOURCES = \
+  mbient/plugins/vram_test.c \
+  src/daemon/configfile.c \
+  src/daemon/types_list.c
+test_plugin_vram_CFLAGS = $(AM_FLAGS)
+test_plugin_vram_LDFLAGS = $(PLUGIN_LDFLAGS)
+test_plugin_vram_LDADD = liboconfig.la libplugin_mock.la
+check_PROGRAMS += test_plugin_vram
+TESTS += test_plugin_vram
 endif
 
 if BUILD_PLUGIN_MIC
@@ -1591,6 +1684,25 @@ pkglib_LTLIBRARIES += notify_nagios.la
 notify_nagios_la_SOURCES = src/notify_nagios.c
 notify_nagios_la_LDFLAGS = $(PLUGIN_LDFLAGS)
 endif
+
+if BUILD_QNX
+if BUILD_PLUGIN_NPU
+pkglib_LTLIBRARIES += npu.la
+npu_la_SOURCES = mbient/plugins/qnx/npu.cpp
+npu_la_LDFLAGS = $(PLUGIN_LDFLAGS)
+npu_la_LIBADD = -lsysprofiler -lfastrpc -lfastrpc_pmem -lclock_client -llibstd -ltzbsplib-qvmhost
+endif
+endif
+
+if BUILD_QNX
+if BUILD_PLUGIN_NETSTAT_QNX
+pkglib_LTLIBRARIES += netstat_qnx.la
+netstat_qnx_la_SOURCES = mbient/plugins/qnx/netstat_qnx.c
+netstat_qnx_la_LDFLAGS = $(PLUGIN_LDFLAGS)
+netstat_qnx_la_LIBADD = -lsocket
+endif
+endif
+
 
 if BUILD_PLUGIN_NTPD
 pkglib_LTLIBRARIES += ntpd.la
@@ -1781,7 +1893,11 @@ endif
 
 if BUILD_PLUGIN_PROCESSES
 pkglib_LTLIBRARIES += processes.la
+if BUILD_QNX
+processes_la_SOURCES = mbient/plugins/qnx/processes.c
+else
 processes_la_SOURCES = src/processes.c
+endif
 processes_la_CPPFLAGS = $(AM_CPPFLAGS)
 processes_la_LDFLAGS = $(PLUGIN_LDFLAGS)
 processes_la_LIBADD =
@@ -1793,6 +1909,38 @@ processes_la_CPPFLAGS += -DHAVE_LIBTASKSTATS=1
 processes_la_LIBADD += libtaskstats.la
 endif
 endif
+
+if BUILD_PLUGIN_PROCESSES2
+pkglib_LTLIBRARIES += processes2.la
+processes2_la_SOURCES = mbient/plugins/processes2.c
+processes2_la_CPPFLAGS = $(AM_CPPFLAGS)
+processes2_la_LDFLAGS = $(PLUGIN_LDFLAGS)
+processes2_la_LIBADD = libmount.la libavltree.la
+if BUILD_WITH_LIBKVM_GETPROCS
+processes2_la_LIBADD += -lkvm
+endif
+if HAVE_LIBMNL
+processes2_la_CPPFLAGS += -DHAVE_LIBTASKSTATS=1
+processes2_la_LIBADD += libtaskstats.la
+endif
+
+test_plugin_processes2_SOURCES = mbient/plugins/processes2_test.c \
+  src/daemon/configfile.c src/daemon/types_list.c
+test_plugin_processes2_CFLAGS = $(AM_CFLAGS) $(BUILD_WITH_LIBSYSTEMD_CFLAGS)
+test_plugin_processes2_LDFLAGS = $(PLUGIN_LDFLAGS) $(BUILD_WITH_LIBSYSTEMD_LDFLAGS)
+test_plugin_processes2_LDADD = \
+  libavltree.la \
+  libmount.la \
+  liboconfig.la \
+  libplugin_mock.la \
+  libmetadata.la \
+	liblatency.la \
+  $(BUILD_WITH_LIBSYSTEMD_LIBS)
+check_PROGRAMS += test_plugin_processes2
+TESTS += test_plugin_processes2
+
+endif
+
 
 if BUILD_PLUGIN_PROCEVENT
 pkglib_LTLIBRARIES += procevent.la
@@ -1865,6 +2013,27 @@ rrdtool_la_SOURCES = \
 rrdtool_la_CFLAGS = $(AM_CFLAGS) $(BUILD_WITH_LIBRRD_CFLAGS)
 rrdtool_la_LDFLAGS = $(PLUGIN_LDFLAGS) $(BUILD_WITH_LIBRRD_LDFLAGS)
 rrdtool_la_LIBADD = $(BUILD_WITH_LIBRRD_LIBS)
+endif
+
+if BUILD_PLUGIN_SDBUS
+pkglib_LTLIBRARIES += sdbus.la
+sdbus_la_SOURCES = mbient/plugins/sdbus.c
+sdbus_la_CFLAGS = $(AM_CFLAGS) $(BUILD_WITH_LIBSYSTEMD_CFLAGS)
+sdbus_la_LDFLAGS = $(PLUGIN_LDFLAGS) $(BUILD_WITH_LIBSYSTEMD_LDFLAGS)
+sdbus_la_LIBADD = liblatency.la libformat_graphite.la libformat_json.la $(BUILD_WITH_LIBSYSTEMD_LIBS)
+
+test_plugin_sdbus_SOURCES = mbient/plugins/sdbus_test.c \
+  src/daemon/configfile.c src/daemon/types_list.c
+test_plugin_sdbus_CFLAGS = $(AM_CFLAGS) $(BUILD_WITH_LIBSYSTEMD_CFLAGS)
+test_plugin_sdbus_LDFLAGS = $(PLUGIN_LDFLAGS) $(BUILD_WITH_LIBSYSTEMD_LDFLAGS)
+test_plugin_sdbus_LDADD = \
+  liboconfig.la \
+  libplugin_mock.la \
+  libmetadata.la \
+	liblatency.la \
+  $(BUILD_WITH_LIBSYSTEMD_LIBS)
+check_PROGRAMS += test_plugin_sdbus
+TESTS += test_plugin_sdbus
 endif
 
 if BUILD_PLUGIN_SENSORS
@@ -2091,10 +2260,17 @@ ted_la_LDFLAGS = $(PLUGIN_LDFLAGS)
 endif
 
 if BUILD_PLUGIN_THERMAL
+if BUILD_QNX
+pkglib_LTLIBRARIES += thermal.la
+thermal_la_SOURCES = mbient/plugins/qnx/thermal.c
+thermal_la_LDFLAGS = $(PLUGIN_LDFLAGS)
+thermal_la_LIBADD = -lthermal_client
+else
 pkglib_LTLIBRARIES += thermal.la
 thermal_la_SOURCES = src/thermal.c
 thermal_la_LDFLAGS = $(PLUGIN_LDFLAGS)
 thermal_la_LIBADD = libignorelist.la
+endif
 endif
 
 if BUILD_PLUGIN_THRESHOLD
@@ -2212,6 +2388,72 @@ if BUILD_PLUGIN_WIRELESS
 pkglib_LTLIBRARIES += wireless.la
 wireless_la_SOURCES = src/wireless.c
 wireless_la_LDFLAGS = $(PLUGIN_LDFLAGS)
+endif
+
+if BUILD_PLUGIN_WRITE_DLT
+pkglib_LTLIBRARIES += write_dlt.la
+write_dlt_la_SOURCES = mbient/plugins/write_dlt.cpp
+
+write_dlt_la_CPPFLAGS = -fPIC $(AM_CPPFLAGS)
+write_dlt_la_LDFLAGS = $(PLUGIN_LDFLAGS)
+write_dlt_la_LIBADD = libformat_graphite.la libformat_json.la
+if BUILD_QNX
+write_dlt_la_LIBADD += -lregex
+endif
+
+if BUILD_WITH_LIBDLT
+write_dlt_la_CPPFLAGS += $(BUILD_WITH_LIBDLT_CPPFLAGS)
+write_dlt_la_LDFLAGS += $(BUILD_WITH_LIBDLT_LDFLAGS)
+write_dlt_la_LIBADD += $(BUILD_WITH_LIBDLT_LIBS)
+endif
+
+if BUILD_WITH_LIBARALOG
+write_dlt_la_CPPFLAGS += $(BUILD_WITH_ARA_LOG_CPPFLAGS)
+write_dlt_la_LDFLAGS += $(BUILD_WITH_ARA_LOG_LDFLAGS) -fPIC \
+  -lextended_libs
+write_dlt_la_LIBADD += $(BUILD_WITH_ARA_LOG_LIBS)
+endif
+
+if BUILD_WITH_LIBDLT
+test_plugin_write_dlt_SOURCES = mbient/plugins/write_dlt_test.cpp \
+  src/daemon/configfile.c src/daemon/types_list.c
+test_plugin_write_dlt_CPPFLAGS = $(AM_CPPFLAGS) $(BUILD_WITH_LIBDLT_CPPFLAGS)
+test_plugin_write_dlt_LDFLAGS = $(PLUGIN_LDFLAGS) $(BUILD_WITH_LIBDLT_LDFLAGS)
+test_plugin_write_dlt_LDADD = \
+  libformat_graphite.la \
+  libformat_json.la \
+  liboconfig.la \
+  libplugin_mock.la \
+  libmetadata.la \
+  $(BUILD_WITH_LIBDLT_LIBS)
+check_PROGRAMS += test_plugin_write_dlt
+TESTS += test_plugin_write_dlt
+endif
+
+endif
+
+if BUILD_PLUGIN_THREADS
+pkglib_LTLIBRARIES += threads.la
+threads_la_SOURCES = mbient/plugins/threads.cpp
+threads_la_CPPFLAGS = -std=c++17 -fPIC $(AM_CPPFLAGS)
+threads_la_LDFLAGS = $(PLUGIN_LDFLAGS)
+threads_la_LIBADD =
+endif
+
+if BUILD_PLUGIN_SDNOTIFY
+pkglib_LTLIBRARIES += sdnotify.la
+sdnotify_la_SOURCES = src/sdnotify.c
+sdnotify_la_CPPFLAGS = -fPIC $(AM_CPPFLAGS)
+sdnotify_la_LDFLAGS = -lsystemd $(PLUGIN_LDFLAGS)
+sdnotify_la_LIBADD =
+test_plugin_sdnotify_SOURCES = src/sdnotify_test.c \
+	src/daemon/configfile.c \
+	src/daemon/types_list.c
+test_plugin_sdnotify_CPPFLAGS = $(AM_CPPFLAGS) $(BUILD_WITH_LIBSDNOTIFY_CPPFLAGS)
+test_plugin_sdnotify_LDFLAGS = $(PLUGIN_LDFLAGS) $(BUILD_WITH_LIBSDNOTIFY_LDFLAGS)
+test_plugin_sdnotify_LDADD = liboconfig.la libplugin_mock.la $(BUILD_WITH_LIBSDNOTIFY_LIBS)
+check_PROGRAMS += test_plugin_sdnotify
+TESTS += test_plugin_sdnotify
 endif
 
 if BUILD_PLUGIN_WRITE_GRAPHITE
@@ -2437,6 +2679,8 @@ install-exec-hook:
 	$(INSTALL) -m 0644 $(srcdir)/src/types.db $(DESTDIR)$(cpkgdatadir)/types.db;
 	$(INSTALL) -m 0644 $(srcdir)/src/postgresql_default.conf \
 		$(DESTDIR)$(cpkgdatadir)/postgresql_default.conf;
+
+	$(INSTALL) -m 0644 $(srcdir)/mbient/mbient-types.db $(DESTDIR)$(cpkgdatadir)/mbient-types.db
 
 uninstall-hook:
 	rm -f $(DESTDIR)$(cpkgdatadir)/types.db;

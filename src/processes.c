@@ -157,6 +157,10 @@
 #include <regex.h>
 #endif
 
+#if HAVE_PWD_H
+#include <pwd.h>
+#endif
+
 #if HAVE_KSTAT_H
 #include <kstat.h>
 #endif
@@ -173,10 +177,13 @@
 #endif
 #endif
 
+#define USER_NAME_BUFFER_SIZE 256
+
 #define PROCSTAT_NAME_LEN 256
 typedef struct process_entry_s {
   unsigned long id;
   char name[PROCSTAT_NAME_LEN];
+  unsigned long uid;
 
   unsigned long num_proc;
   unsigned long num_lwp;
@@ -251,7 +258,8 @@ typedef struct procstat_entry_s {
 typedef struct procstat {
   char name[PROCSTAT_NAME_LEN];
 #if HAVE_REGEX_H
-  regex_t *re;
+  regex_t *cmd_re;
+  regex_t *user_re;
 #endif
 
   unsigned long num_proc;
@@ -349,7 +357,8 @@ static ts_t *taskstats_handle;
 /* put name of process from config to list_head_g tree
  * list_head_g is a list of 'procstat_t' structs with
  * processes names we want to watch */
-static procstat_t *ps_list_register(const char *name, const char *regexp) {
+static procstat_t *ps_list_register(const char *name, 
+         const char *cmd_regexp, const char *user_regexp) {
   procstat_t *new;
   procstat_t *ptr;
   int status;
@@ -376,32 +385,61 @@ static procstat_t *ps_list_register(const char *name, const char *regexp) {
   new->report_delay = report_delay;
 
 #if HAVE_REGEX_H
-  if (regexp != NULL) {
-    DEBUG("ProcessMatch: adding \"%s\" as criteria to process %s.", regexp,
-          name);
-    new->re = malloc(sizeof(*new->re));
-    if (new->re == NULL) {
+  if (cmd_regexp != NULL) {
+    DEBUG("ProcessMatch: adding \"%s\" as command line criteria to process %s.", 
+          cmd_regexp, name);
+    new->cmd_re = malloc(sizeof(*new->cmd_re));
+    if (new->cmd_re == NULL) {
       ERROR("processes plugin: ps_list_register: malloc failed.");
       sfree(new);
       return NULL;
     }
 
-    status = regcomp(new->re, regexp, REG_EXTENDED | REG_NOSUB);
+    status = regcomp(new->cmd_re, cmd_regexp, REG_EXTENDED | REG_NOSUB);
     if (status != 0) {
       DEBUG("ProcessMatch: compiling the regular expression \"%s\" failed.",
-            regexp);
-      sfree(new->re);
+            cmd_regexp);
+      sfree(new->cmd_re);
+      sfree(new);
+      return NULL;
+    }
+  }
+
+  if (user_regexp != NULL) {
+    DEBUG("ProcessMatch: adding \"%s\" as use criteria to process %s.", 
+          user_regexp, name);
+    new->user_re = malloc(sizeof(*new->user_re));
+    if (new->user_re == NULL) {
+      ERROR("processes plugin: ps_list_register: malloc failed.");
+      sfree(new);
+      return NULL;
+    }
+
+    status = regcomp(new->user_re, user_regexp, REG_EXTENDED | REG_NOSUB);
+    if (status != 0) {
+      DEBUG("ProcessMatch: compiling the regular expression \"%s\" failed.",
+            user_regexp);
+      sfree(new->user_re);
       sfree(new);
       return NULL;
     }
   }
 #else
-  if (regexp != NULL) {
+  if (cmd_regexp != NULL) {
     ERROR("processes plugin: ps_list_register: "
-          "Regular expression \"%s\" found in config "
+          "Regular expression \"%s\" found for command line in config "
           "file, but support for regular expressions "
           "has been disabled at compile time.",
-          regexp);
+          cmd_regexp);
+    sfree(new);
+    return NULL;
+  }
+  if (user_regexp != NULL) {
+    ERROR("processes plugin: ps_list_register: "
+          "Regular expression \"%s\" found for user in config "
+          "file, but support for regular expressions "
+          "has been disabled at compile time.",
+          user_regexp);
     sfree(new);
     return NULL;
   }
@@ -415,7 +453,8 @@ static procstat_t *ps_list_register(const char *name, const char *regexp) {
               "All but the first setting will be "
               "ignored.");
 #if HAVE_REGEX_H
-      sfree(new->re);
+      sfree(new->cmd_re);
+      sfree(new->user_re);
 #endif
       sfree(new);
       return NULL;
@@ -435,9 +474,11 @@ static procstat_t *ps_list_register(const char *name, const char *regexp) {
 
 /* try to match name against entry, returns 1 if success */
 static int ps_list_match(const char *name, const char *cmdline,
-                         procstat_t *ps) {
+                         const char *username, procstat_t *ps) {
+  bool match_name = false;
+  bool match_user = true;
 #if HAVE_REGEX_H
-  if (ps->re != NULL) {
+  if (ps->cmd_re != NULL) {
     int status;
     const char *str;
 
@@ -447,18 +488,32 @@ static int ps_list_match(const char *name, const char *cmdline,
 
     assert(str != NULL);
 
-    status = regexec(ps->re, str,
+    status = regexec(ps->cmd_re, str,
                      /* nmatch = */ 0,
                      /* pmatch = */ NULL,
                      /* eflags = */ 0);
     if (status == 0)
-      return 1;
+      match_name = true;
   } else
 #endif
-      if (strcmp(ps->name, name) == 0)
-    return 1;
+  if (strcmp(ps->name, name) == 0)
+    match_name = true;
 
-  return 0;
+#if HAVE_PWD_H
+  if (ps->user_re != NULL && username != NULL) {
+    int status;
+    
+    INFO("check against user %s", username);
+    status = regexec(ps->user_re, username,
+                     /* nmatch = */ 0,
+                     /* pmatch = */ NULL,
+                     /* eflags = */ 0);
+    if (status != 0)
+      match_user = false;
+  }
+#endif
+
+  return match_name && match_user;
 } /* int ps_list_match */
 
 static void ps_update_counter(derive_t *group_counter, derive_t *curr_counter,
@@ -517,14 +572,14 @@ static void ps_update_delay(procstat_t *out, procstat_entry_t *prev,
 
 /* add process entry to 'instances' of process 'name' (or refresh it) */
 static void ps_list_add(const char *name, const char *cmdline,
-                        process_entry_t *entry) {
+                        const char *username, process_entry_t *entry) {
   procstat_entry_t *pse;
 
   if (entry->id == 0)
     return;
 
   for (procstat_t *ps = list_head_g; ps != NULL; ps = ps->next) {
-    if ((ps_list_match(name, cmdline, ps)) == 0)
+    if ((ps_list_match(name, cmdline, username, ps)) == 0)
       continue;
 
 #if KERNEL_LINUX
@@ -599,6 +654,8 @@ static void ps_list_add(const char *name, const char *cmdline,
     if (entry->has_delay)
       ps_update_delay(ps, pse, entry);
 #endif
+
+    break;
   }
 }
 
@@ -703,24 +760,48 @@ static int ps_config(oconfig_item_t *ci) {
       }
 #endif
 
-      ps = ps_list_register(c->values[0].value.string, NULL);
+      ps = ps_list_register(c->values[0].value.string, NULL, NULL);
 
       if (c->children_num != 0 && ps != NULL)
         ps_tune_instance(c, ps);
     } else if (strcasecmp(c->key, "ProcessMatch") == 0) {
-      if ((c->values_num != 2) || (OCONFIG_TYPE_STRING != c->values[0].type) ||
+      if ((c->values_num < 2) ||
+          (c->values_num > 3) ||
+          (OCONFIG_TYPE_STRING != c->values[0].type) ||
           (OCONFIG_TYPE_STRING != c->values[1].type)) {
-        ERROR("processes plugin: `ProcessMatch' needs exactly "
-              "two string arguments (got %i).",
+        ERROR("processes plugin: `ProcessMatch' needs "
+              "two or three string arguments (got %i).",
               c->values_num);
         continue;
       }
 
-      ps = ps_list_register(c->values[0].value.string,
-                            c->values[1].value.string);
+      const char* cmd_regexp = c->values[1].value.string;
+      const char* user_regexp = NULL;
+      if (c->values_num >= 3)
+        user_regexp = c->values[2].value.string;
+
+      ps = ps_list_register(c->values[0].value.string, cmd_regexp, user_regexp);
 
       if (c->children_num != 0 && ps != NULL)
         ps_tune_instance(c, ps);
+    } else if (strcasecmp(c->key, "ProcessMatchByUser") == 0) {
+        bool active;
+        cf_util_get_boolean(c, &active);
+        if (active) {
+          struct passwd *pwd;
+          char regex_buffer[USER_NAME_BUFFER_SIZE + 3];
+          regex_buffer[0] = '^';
+          while ((pwd = getpwent()) != NULL) {
+            sstrncpy(regex_buffer + 1, pwd->pw_name, USER_NAME_BUFFER_SIZE);
+            strncat(regex_buffer, "$", 2);
+
+            ps = ps_list_register(pwd->pw_name, NULL, regex_buffer);
+
+            if (c->children_num != 0 && ps != NULL)
+              ps_tune_instance(c, ps);
+          }
+          endpwent();
+        }
     } else if (strcasecmp(c->key, "CollectContextSwitch") == 0) {
       cf_util_get_boolean(c, &report_ctx_switch);
     } else if (strcasecmp(c->key, "CollectFileDescriptor") == 0) {
@@ -1071,6 +1152,7 @@ static int ps_read_status(long pid, process_entry_t *ps) {
   FILE *fh;
   char buffer[1024];
   char filename[64];
+  unsigned long uid = 0;
   unsigned long lib = 0;
   unsigned long exe = 0;
   unsigned long data = 0;
@@ -1086,7 +1168,9 @@ static int ps_read_status(long pid, process_entry_t *ps) {
     unsigned long tmp;
     char *endptr;
 
-    if (strncmp(buffer, "Vm", 2) != 0 && strncmp(buffer, "Threads", 7) != 0)
+    if (strncmp(buffer, "Vm", 2) != 0 && \
+        strncmp(buffer, "Threads", 7) != 0 &&\
+        strncmp(buffer, "Uid", 3) != 0)
       continue;
 
     numfields = strsplit(buffer, fields, STATIC_ARRAY_SIZE(fields));
@@ -1106,6 +1190,8 @@ static int ps_read_status(long pid, process_entry_t *ps) {
         exe = tmp;
       } else if (strncmp(buffer, "Threads", 7) == 0) {
         threads = tmp;
+      } else if (strncmp(buffer, "Uid", 3) == 0) {
+        uid = tmp;
       }
     }
   } /* while (fgets) */
@@ -1114,6 +1200,7 @@ static int ps_read_status(long pid, process_entry_t *ps) {
     WARNING("processes: fclose: %s", STRERRNO);
   }
 
+  ps->uid = uid;
   ps->vmem_data = data * 1024;
   ps->vmem_code = (exe + lib) * 1024;
   if (threads != 0)
@@ -1573,6 +1660,24 @@ static char *ps_get_cmdline(long pid, char *name, char *buf, size_t buf_len) {
   }
   return buf;
 } /* char *ps_get_cmdline (...) */
+
+static char *ps_get_username(unsigned long uid, char *buf, size_t buf_len) {
+  INFO("processes plugin: get user name for %lu\n", uid);
+  if (uid == 0) {
+    sstrncpy(buf, "root", buf_len);
+  }
+  else {
+#ifdef HAVE_PWD_H
+  struct passwd* pw = getpwuid(uid);
+  if (pw != NULL) 
+    sstrncpy(buf, pw->pw_name, buf_len);
+  else
+#endif  
+    sstrncpy(buf, "unknown", buf_len);
+  }
+
+  return buf;
+}
 
 static int read_fork_rate(void) {
   FILE *proc_stat;
@@ -2083,6 +2188,7 @@ static int ps_read(void) {
   long pid;
 
   char cmdline[CMDLINE_BUFFER_SIZE];
+  char username[USER_NAME_BUFFER_SIZE];
 
   int status;
   process_entry_t pse;
@@ -2134,7 +2240,8 @@ static int ps_read(void) {
     }
 
     ps_list_add(pse.name,
-                ps_get_cmdline(pid, pse.name, cmdline, sizeof(cmdline)), &pse);
+                ps_get_cmdline(pid, pse.name, cmdline, sizeof(cmdline)), 
+                ps_get_username(pse.uid, username, sizeof(username)), &pse);
   }
 
   closedir(proc);

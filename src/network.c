@@ -82,6 +82,11 @@ GCRY_THREAD_OPTION_PTHREAD_IMPL;
 #endif
 #endif /* !IP_ADD_MEMBERSHIP */
 
+/* QNX io-pkt does not support AI_ADDRCONFIG */
+#ifdef KERNEL_QNX
+#define AI_ADDRCONFIG 0
+#endif
+
 /*
  * Maximum size required for encryption / signing:
  *
