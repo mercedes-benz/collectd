@@ -64,7 +64,6 @@ cmd_status_t cmd_parse_listval(size_t argc, char **argv,
               STRERRNO);                                                       \
       free_everything_and_return(CMD_ERROR);                                   \
     }                                                                          \
-    fflush(fh);                                                                \
   } while (0)
 
 cmd_status_t cmd_handle_listval(FILE *fh, char *buffer) {
@@ -93,11 +92,25 @@ cmd_status_t cmd_handle_listval(FILE *fh, char *buffer) {
     cmd_error(CMD_ERROR, &err, "uc_get_names failed.");
     free_everything_and_return(CMD_ERROR);
   }
+  /* change line buffering mode to fully buffered mode to avoid
+   * excessive flushing */
+  char my_buffer[8192];
+  if (setvbuf(fh, my_buffer, _IOFBF, sizeof(my_buffer)) != 0) {
+    ERROR("command listval: setvbuf(_IOFBF) failed: %s", STRERRNO);
+    free_everything_and_return(CMD_ERROR); 
+  }
 
   print_to_socket(fh, "%i Value%s found\n", (int)number,
                   (number == 1) ? "" : "s");
   for (size_t i = 0; i < number; i++)
     print_to_socket(fh, "%.3f %s\n", CDTIME_T_TO_DOUBLE(times[i]), names[i]);
+  fflush(fh);
+
+  /* change back to line buffering mode */
+  if (setvbuf(fh, NULL, _IOLBF, 0) != 0) {
+    ERROR("command listval: setvbuf(_IOLBF) failed: %s", STRERRNO);
+    free_everything_and_return(CMD_ERROR);
+  }
 
   free_everything_and_return(CMD_OK);
 } /* cmd_status_t cmd_handle_listval */

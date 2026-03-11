@@ -341,8 +341,7 @@ DEF_TEST(parsing_cmdline) {
   return 0;
 }
 
-/* --------------------------------------------------------------------------
- */
+/* -------------------------------------------------------------------------- */
 DEF_TEST(process_classification1) {
 
   cdtime_t now = cdtime();
@@ -367,8 +366,7 @@ DEF_TEST(process_classification1) {
   return 0;
 }
 
-/* --------------------------------------------------------------------------
- */
+/* -------------------------------------------------------------------------- */
 DEF_TEST(process_classification2) {
 
   cdtime_t now = cdtime();
@@ -391,8 +389,7 @@ DEF_TEST(process_classification2) {
   return 0;
 }
 
-/* --------------------------------------------------------------------------
- */
+/* -------------------------------------------------------------------------- */
 DEF_TEST(process_classification3) {
 
   cdtime_t now = cdtime();
@@ -400,8 +397,10 @@ DEF_TEST(process_classification3) {
   proc_cluster_t *cluster = p2_cluster_register("test");
   p2_statlist_register(cluster, "%N", ".*", NULL, NULL, true);
 
-  process_entry_t pe_a1 = {.id = 3, .name = "com.mercedes.adapter"};
-  process_entry_t pe_a2 = {.id = 4, .name = "com.mercedes.adapter:loader"};
+  process_entry_t pe_a1 = {
+      .id = 3, .name = "com.mercedes.adapter", .cpu_user_counter = 1000};
+  process_entry_t pe_a2 = {
+      .id = 4, .name = "com.mercedes.adapter:loader", .cpu_user_counter = 2000};
 
   p2_cluster_add(now, pe_a1.name, pe_a1.name, "root", "cg1", &pe_a1);
   p2_cluster_add(now, pe_a2.name, pe_a2.name, "root", "cg1", &pe_a2);
@@ -410,17 +409,95 @@ DEF_TEST(process_classification3) {
   CHECK_NOT_NULL(cluster->procs->next);
   CHECK_NOT_NULL(cluster->procs->next->next);
   CHECK_ZERO(cluster->procs->next->next->next);
-
+  p2_cluster_submit(now);
   p2_cluster_destroy();
 
   return 0;
 }
 
-/* **************************************************************************
- */
+/* -------------------------------------------------------------------------- */
+DEF_TEST(process_classification4) {
+
+  cdtime_t now = cdtime();
+
+  proc_cluster_t *cluster = p2_cluster_register("test");
+  p2_statlist_register(cluster, "%N", ".*", NULL, NULL, true);
+
+  process_entry_t pe_a11 = {
+      .id = 11,
+      .name = "com.microsoft.windowsintune.companyportal:omadm_client_process"};
+  process_entry_t pe_a12 = {
+      .id = 12,
+      .name = "com.microsoft.windowsintune.companyportal.omadm_client_process"};
+
+  p2_cluster_add(now, pe_a11.name, pe_a11.name, "root", "cg1", &pe_a11);
+  p2_cluster_add(now, pe_a12.name, pe_a12.name, "root", "cg1", &pe_a12);
+
+  CHECK_NOT_NULL(cluster->procs);
+  CHECK_NOT_NULL(cluster->procs->next);
+  CHECK_ZERO(cluster->procs->next->next);
+
+  p2_cluster_submit(now);
+  p2_cluster_destroy();
+
+  return 0;
+}
+
+/* -------------------------------------------------------------------------- */
+DEF_TEST(list_pids) {
+  char buffer[256];
+  char *bufp;
+  size_t bufs;
+
+  procstat_entry_t e9 = {
+      .id = 9, .cpu_user_counter = 9000, .cpu_system_counter = 9, .next = NULL};
+  procstat_entry_t e8 = {
+      .id = 8, .cpu_user_counter = 1000, .cpu_system_counter = 8, .next = &e9};
+  procstat_entry_t e7 = {
+      .id = 7, .cpu_user_counter = 7000, .cpu_system_counter = 7, .next = &e8};
+  procstat_entry_t e6 = {
+      .id = 6, .cpu_user_counter = 1000, .cpu_system_counter = 6, .next = &e7};
+  procstat_entry_t e5 = {
+      .id = 5, .cpu_user_counter = 5000, .cpu_system_counter = 5, .next = &e6};
+  procstat_entry_t e4 = {
+      .id = 4, .cpu_user_counter = 1000, .cpu_system_counter = 4, .next = &e5};
+  procstat_entry_t e3 = {
+      .id = 3, .cpu_user_counter = 3000, .cpu_system_counter = 3, .next = &e4};
+  procstat_entry_t e2 = {
+      .id = 2, .cpu_user_counter = 1000, .cpu_system_counter = 2, .next = &e3};
+  procstat_entry_t e1 = {
+      .id = 1, .cpu_user_counter = 1000, .cpu_system_counter = 1, .next = &e2};
+  procstat_entry_t e0 = {
+      .id = 0, .cpu_user_counter = 0, .cpu_system_counter = 0, .next = &e1};
+
+  bufp = buffer;
+  bufs = sizeof(buffer);
+  EXPECT_EQ_INT(p2_list_pids(&bufp, &bufs, &e0, 10), 0);
+  EXPECT_EQ_STR(buffer, "9,7,5,3,8,6,4,2,1");
+  bufp = buffer;
+  bufs = sizeof(buffer);
+  EXPECT_EQ_INT(p2_list_pids(&bufp, &bufs, &e0, 5), 0);
+  EXPECT_EQ_STR(buffer, "9,7,5,3,8,...");
+  bufp = buffer;
+  bufs = sizeof(buffer);
+  EXPECT_EQ_INT(p2_list_pids(&bufp, &bufs, &e0, 1), 0);
+  EXPECT_EQ_STR(buffer, "9,...");
+  bufp = buffer;
+  bufs = sizeof(buffer);
+  EXPECT_EQ_INT(p2_list_pids(&bufp, &bufs, &e9, 10), 0);
+  EXPECT_EQ_STR(buffer, "9");
+  bufp = buffer;
+  bufs = 10;
+  EXPECT_EQ_INT(p2_list_pids(&bufp, &bufs, &e0, 10), 0);
+  EXPECT_EQ_STR(buffer, "9,7,5,3,8");
+  printf("%s", buffer);
+
+  return 0;
+}
+
+/* ************************************************************************** */
 /* main */
-/* **************************************************************************
- */
+/* ************************************************************************** */
 
 int main(void) {
   RUN_TEST(load_config);
@@ -435,7 +512,9 @@ int main(void) {
   RUN_TEST(process_classification1);
   RUN_TEST(process_classification2);
   RUN_TEST(process_classification3);
+  RUN_TEST(process_classification4);
   RUN_TEST(memdiff_order);
+  RUN_TEST(list_pids);
 
   printf("failures: %d", fail_count__);
   END_TEST;

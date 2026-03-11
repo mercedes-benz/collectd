@@ -22,7 +22,8 @@ export CPPFLAGS="-I${CMAKE_INSTALL_PREFIX}/include/ \
 
 export LDFLAGS="-L${CMAKE_INSTALL_PREFIX}/lib/ \
                 -L${QNX_AP_BASE_DIR}/install/aarch64le/lib \
-                -L${CMAKE_BINARY_DIR}/${LAYER_PLATFORM_SERVICES}/dlt-daemon/src/lib/"
+                -L${CMAKE_BINARY_DIR}/${LAYER_PLATFORM_SERVICES}/dlt-daemon/src/lib/ \
+                -L${CMAKE_BINARY_DIR}/_deps/dlt-daemon-build/src/lib/"
 
 # Patch the generated "configure" file since libtool has a bug (see https://debbugs.gnu.org/cgi/bugreport.cgi?bug=21137)
 sed -i -e "s:test x-L = \"\$p\":test x-L = \"x\$p\":" \
@@ -30,6 +31,8 @@ sed -i -e "s:test x-L = \"\$p\":test x-L = \"x\$p\":" \
         configure
 
 ./configure        --host aarch64-unknown-nto-qnx7.1.0 \
+                   ac_cv_path_PROTOC="" \
+                   ac_cv_path_GRPC_CPP_PLUGIN="" \
                    --disable-all-plugins \
                    --disable-werror \
                    --with-fp-layout=nothing \

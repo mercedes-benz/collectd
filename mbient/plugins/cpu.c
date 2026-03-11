@@ -210,11 +210,18 @@ static bool report_guest;
 static bool subtract_guest = true;
 static bool report_active = false;
 static bool report_cpu_pressure = false;
+static bool report_total_cpu_usage = false;
 
-static const char *config_keys[] = {"ReportByCpu",       "ReportByState",
-                                    "ReportNumCpu",      "ValuesPercentage",
-                                    "ReportGuestState",  "SubtractGuestState",
-                                    "ReportActiveState", "ReportCpuPressure"};
+/* Variables for tracking aggregate CPU usage */
+static unsigned long long prev_cpu_total = 0;
+static unsigned long long prev_cpu_idle = 0;
+static unsigned long long prev_cpu_iowait = 0;
+static gauge_t cpu_usage = 0;
+
+static const char *config_keys[] = {
+    "ReportByCpu",       "ReportByState",     "ReportNumCpu",
+    "ValuesPercentage",  "ReportGuestState",  "SubtractGuestState",
+    "ReportActiveState", "ReportCpuPressure", "ReportTotalCpuUsage"};
 static int config_keys_num = STATIC_ARRAY_SIZE(config_keys);
 
 static int cpu_config(char const *key, char const *value) /* {{{ */
@@ -235,6 +242,8 @@ static int cpu_config(char const *key, char const *value) /* {{{ */
     report_active = IS_TRUE(value);
   else if (strcasecmp(key, "ReportCpuPressure") == 0)
     report_cpu_pressure = IS_TRUE(value);
+  else if (strcasecmp(key, "ReportTotalCpuUsage") == 0)
+    report_total_cpu_usage = IS_TRUE(value);
   else
     return -1;
 
@@ -729,6 +738,17 @@ static void cpu_notify(cdtime_t now) {
     if (p.meta != NULL)
       plugin_notification_meta_free(p.meta);
   }
+
+  if (report_total_cpu_usage) {
+    notification_t p = {NOTIF_OKAY,        now, "",  "", "cpu", "",
+                        "cpu_total_usage", "",  NULL};
+
+    snprintf(p.message, sizeof(p.message), "CPU total %s usage: %.2f%%",
+             hostname_g, cpu_usage);
+    plugin_dispatch_notification(&p);
+    if (p.meta != NULL)
+      plugin_notification_meta_free(p.meta);
+  }
 }
 
 static int cpu_read(void) {
@@ -787,6 +807,41 @@ static int cpu_read(void) {
   while (fgets(buf, 1024, fh) != NULL) {
     if (strncmp(buf, "cpu", 3))
       continue;
+
+    /* Process aggregate CPU line for total usage */
+    if (report_total_cpu_usage && buf[3] == ' ') {
+      numfields = strsplit(buf, fields, STATIC_ARRAY_SIZE(fields));
+      if (numfields >= 5) {
+        unsigned long long user = atoll(fields[1]);
+        unsigned long long nice = atoll(fields[2]);
+        unsigned long long system = atoll(fields[3]);
+        unsigned long long idle = atoll(fields[4]);
+        unsigned long long iowait = (numfields > 5) ? atoll(fields[5]) : 0;
+        unsigned long long irq = (numfields > 6) ? atoll(fields[6]) : 0;
+        unsigned long long softirq = (numfields > 7) ? atoll(fields[7]) : 0;
+        unsigned long long steal = (numfields > 8) ? atoll(fields[8]) : 0;
+
+        unsigned long long total =
+            user + nice + system + idle + iowait + irq + softirq + steal;
+
+        if (prev_cpu_total > 0) {
+          unsigned long long total_diff = total - prev_cpu_total;
+          unsigned long long idle_diff = idle - prev_cpu_idle;
+          unsigned long long iowait_diff = iowait - prev_cpu_iowait;
+
+          if (total_diff > 0) {
+            cpu_usage = 100.0 * (total_diff - idle_diff - iowait_diff) / total_diff;
+          }
+        }
+
+        prev_cpu_total = total;
+        prev_cpu_idle = idle;
+        prev_cpu_iowait = iowait;
+      }
+      continue;
+    }
+
+    /* Process per-CPU lines (cpu0, cpu1, etc.) */
     if ((buf[3] < '0') || (buf[3] > '9'))
       continue;
 
@@ -881,7 +936,7 @@ static int cpu_read(void) {
       return -1;
     }
 
-    memset(&buf, 0, sizeof(memset));
+    memset(&buf, 0, sizeof(buf));
     while (fgets(buf, sizeof(buf), fh) != NULL) {
       if (strncasecmp(buf, "some", 4) == 0) {
         numfields = strsplit(buf, fields, STATIC_ARRAY_SIZE(fields));

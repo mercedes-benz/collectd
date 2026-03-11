@@ -44,6 +44,7 @@
 #define DEFAULT_NUM_USERS   10
 #define MAX_STRING_LEN 128
 #define MAX_NUM_MAP_REGIONS 2048
+#define DEFAULT_THREAD_NAME "(noname)"
 
 static const char *config_keys[] = {"NotifyCpuPerThread",
                                     "SubmitCpuPerThread",
@@ -151,12 +152,18 @@ static void get_process_name(int pid, char* name) {
     if (errno != ESRCH) {
       ERROR("Failed to open %s (%s)", proc_filename, strerror(errno));
     }
+    sstrncpy(name, "(unknown)", MAX_STRING_LEN);
+    return;
   }
-  read(fd, name_tmp, MAX_STRING_LEN);
 
-  char* stripped_name = strrchr(name_tmp, '/');
-  sstrncpy(name, stripped_name ? stripped_name + 1: name_tmp,
-            MAX_STRING_LEN);
+  ssize_t bytes_read = read(fd, name_tmp, MAX_STRING_LEN - 1);
+  if (bytes_read > 0) {
+    name_tmp[bytes_read] = '\0';
+    char* stripped_name = strrchr(name_tmp, '/');
+    sstrncpy(name, stripped_name ? stripped_name + 1: name_tmp, MAX_STRING_LEN);
+  } else {
+    sstrncpy(name, "(unknown)", MAX_STRING_LEN);
+  }
 
   close(fd);
 }
@@ -182,7 +189,7 @@ static uint64_t get_idle_time(int fd) {
  *         1 if the entry to add is greater than the entry in the top list
  */
 static int compare_top_entries(void* entry, int top_entries_index, top_category_t cat) {
-  float result;
+  float result = 0.0;
 
   switch (cat) {
     case TOP_CPU_PROCESSES:
@@ -331,8 +338,8 @@ static void send_notification_for_top_cpu_proc() {
       if (notify_cpu_per_thread) {
         thread_entry_t* thread = top_cpu_threads.entries[i];
         bytes_written = ssnprintf(buf, buf_size, "%s/%.1f%%/%u/%s/%u",
-                  thread->name, thread->cpu_stats.cpu_usage, thread->tid,
-                  thread->parent->name, thread->parent->pid);
+                  thread->name ? thread->name : DEFAULT_THREAD_NAME, thread->cpu_stats.cpu_usage, thread->tid,
+                  thread->parent->name ? thread->parent->name : DEFAULT_THREAD_NAME, thread->parent->pid);
         if (bytes_written < 0 || bytes_written > buf_size) {
           ERROR("Failed to write to buffer for top threads notification");
           return;
@@ -341,6 +348,10 @@ static void send_notification_for_top_cpu_proc() {
         process_entry_t* process = top_cpu_processes.entries[i];
         bytes_written = ssnprintf(buf, buf_size, "%s/%.1f%%/%u",
                   process->name, process->cpu_stats.cpu_usage, process->pid);
+        if (bytes_written < 0 || bytes_written > buf_size) {
+          ERROR("Failed to write to buffer for top processes notification");
+          return;
+        }
       }
       if (plugin_notification_meta_add_string(&n, "", buf) != 0) {
         ERROR("Error adding meta information to notification.");
@@ -356,8 +367,8 @@ static void send_notification_for_top_cpu_proc() {
         thread_entry_t* thread = top_cpu_threads.entries[i];
         ssnprintf(msg, msg_size,
                   "top-cpu-thread-%d: Name: %s, TID: %d, PID: %d[%s] Total CPU time: %f",
-                  i, thread->name, thread->tid,
-                  thread->parent->pid, thread->parent->name,
+                  i, thread->name ? thread->name : DEFAULT_THREAD_NAME, thread->tid,
+                  thread->parent->pid, thread->parent->name ? thread->parent->name : DEFAULT_THREAD_NAME,
                   thread->cpu_stats.cpu_usage);
       } else {
         process_entry_t* process = top_cpu_processes.entries[i];
@@ -495,11 +506,21 @@ static int get_info_from_proc(process_tree_t processes) {
            * this PID in the process tree. Add it here.
            */
           process = calloc(1, sizeof(process_entry_t));
+          if (!process) {
+            ERROR("Failed to allocate memory for process entry!");
+            closedir(dir);
+            return -1;
+          }
           process->pid = pid;
 
           get_process_name(pid, process_name);
           process->name = calloc(strlen(process_name) + 1, sizeof(char));
-          strlcpy(process->name, process_name, MAX_STRING_LEN);
+          if (!process->name) {
+            ERROR("Failed to allocate memory for process name");
+            free(process);
+            continue;
+          }
+          strlcpy(process->name, process_name, strlen(process_name) + 1);
 
           ret = c_avl_insert(processes, (void*)process, (void*)process);
           if (ret != EOK) {
@@ -520,7 +541,7 @@ static int get_info_from_proc(process_tree_t processes) {
         /* Get the process' memory consumption. Reset the previous readings. */
         memset((void*)&process->memory, 0, sizeof(process->memory));
         /* TODO: Measuring the memory of the QVM process takes a long time (> 3s). For now skip it */
-        if (strncmp(process->name, "qvm", MAX_STRING_LEN) != 0) {
+        if (strncmp(process->name, "qvm", 4) != 0) {
           /* Get the number of map entries */
           ret = devctl(fd, DCMD_PROC_MAPINFO, NULL, 0, &num_mapinfos);
           if (ret != EOK) {
@@ -585,6 +606,9 @@ static int get_info_from_proc(process_tree_t processes) {
           }
           process->cpu_stats.execution_time = execution_time - process->cpu_stats.last_execution_time;
           process->cpu_stats.last_execution_time = execution_time;
+          if (process->cpu_stats.elapsed_time == 0) {
+            process->cpu_stats.elapsed_time = 1;
+          }
           process->cpu_stats.cpu_usage = ((float)process->cpu_stats.execution_time / process->cpu_stats.elapsed_time) * 100.0;
           process->cpu_stats.cpu_usage /= num_cpus;
 
@@ -617,11 +641,17 @@ static int get_info_from_proc(process_tree_t processes) {
             /* If a given TID for the given pid does not exist, create it now */
             if (ret != EOK) {
               thread = calloc(1, sizeof(thread_entry_t));
+              if (!thread) {
+                ERROR("Failed to allocate memory for thread entry!");
+                continue;
+              }
               thread->tid = i;
               thread->parent = process;
               ret = c_avl_insert(process->threads, (void*)thread, (void*)thread);
               if (ret != EOK) {
                 ERROR("Failed to insert thread item into thread tree");
+                free(thread);
+                continue;
               }
             }
 
@@ -636,11 +666,19 @@ static int get_info_from_proc(process_tree_t processes) {
             if (thread->start_time != thread_status.start_time) {
               char thread_name[MAX_STRING_LEN] = {0};
               __getset_thread_name(process->pid, thread->tid, NULL, -1, thread_name, sizeof(thread_name));
-              if (thread_name == '\0') {
-                strlcpy(thread_name, "(noname)", sizeof(thread_name));
+              if (thread_name[0] == '\0') {
+                strlcpy(thread_name, DEFAULT_THREAD_NAME, sizeof(thread_name));
               }
-              thread->name = calloc(strlen(thread_name) + 1, sizeof(char));
-              strlcpy(thread->name, thread_name, sizeof(thread_name));
+              char *new_name = realloc(thread->name, strlen(thread_name) + 1);
+              if (!new_name) {
+                ERROR("Failed to allocate memory for thread name");
+                free(thread->name);
+                thread->name = NULL;
+              } else {
+                thread->name = new_name;
+                strlcpy(thread->name, thread_name, strlen(thread_name) + 1);
+              }
+
               thread->start_time = thread_status.start_time;
               thread->cpu_stats.execution_time = execution_time;
             } else {
@@ -648,6 +686,9 @@ static int get_info_from_proc(process_tree_t processes) {
             }
             thread->cpu_stats.last_execution_time = execution_time;
             thread->priority = thread_status.real_priority;
+            if (thread->cpu_stats.elapsed_time == 0) {
+              thread->cpu_stats.elapsed_time = 1;
+            }
             thread->cpu_stats.cpu_usage = ((float)thread->cpu_stats.execution_time / thread->cpu_stats.elapsed_time) * 100.0;
             thread->cpu_stats.cpu_usage /= num_cpus;
             if (check_entry_if_top_user(thread, TOP_CPU_THREADS)) {
@@ -661,37 +702,45 @@ static int get_info_from_proc(process_tree_t processes) {
         close(fd);
       }
     }
+    closedir(dir);
   }
-  closedir(dir);
 
   cleanup_zombies(num_processes);
   return EOK;
 }
 
 static void free_threads(process_entry_t* process) {
-  thread_entry_t* thread = NULL;
+  if (!process->threads) return;
 
-  /* No need to check if process->threads is NULL here.
-   * It is checked inside c_avl_get_iterator()
-   */
+  int thread_count = c_avl_size(process->threads);
+  thread_entry_t** threads = calloc(thread_count, sizeof(thread_entry_t*));
+  if (!threads) {
+    ERROR("Failed to allocate memory for freeing threads");
+    return;
+  }
+  int count = 0;
+
+  thread_entry_t* thread = NULL;
   c_avl_iterator_t* it = c_avl_get_iterator(process->threads);
   if (it) {
     while ((c_avl_iterator_next(it, (void*)&thread, (void*)&thread)) == 0) {
-      c_avl_remove(process->threads, thread, NULL, NULL);
-      free(thread->name);
-      thread->name = NULL;
-      free(thread);
-      thread = NULL;
+      threads[count++] = thread;
     }
     c_avl_iterator_destroy(it);
-    c_avl_destroy(process->threads);
   }
+
+  for (int i = 0; i < count; i++) {
+    c_avl_remove(process->threads, threads[i], NULL, NULL);
+    free(threads[i]->name);
+    free(threads[i]);
+  }
+
+  free(threads);
+  c_avl_destroy(process->threads);
+  process->threads = NULL;
 }
 
 void cleanup_zombies(uint32_t num_processes) {
-  process_entry_t* process = NULL;
-  uint64_t current_timestamp = get_current_time();
-
   /* If we have more than 10 processes that are in the process tree
    * but are not there in the last traversal of the /proc tree we
    * need to clean them up. We are determining the stale processes
@@ -699,23 +748,41 @@ void cleanup_zombies(uint32_t num_processes) {
    * three times the plugin interval, this means that it hasn't been
    * present in the last three loops.
    */
-  if (c_avl_size(process_tree) - num_processes > 10) {
-    c_avl_iterator_t* it = c_avl_get_iterator(process_tree);
-    if (it) {
-      while ((c_avl_iterator_next(it, (void*)&process, (void*)&process)) == 0) {
-        if (current_timestamp > 3 * plugin_get_interval() + process->cpu_stats.last_elapsed_time) {
-          INFO("Found stale process with PID %d. Removing ...\n", process->pid);
-          free_threads(process);
-          c_avl_remove(process_tree, process, NULL, NULL);
-          free(process->name);
-          process->name = NULL;
-          free(process);
-          process = NULL;
-        }
-      }
-      c_avl_iterator_destroy(it);
-    }
+  if (c_avl_size(process_tree) - num_processes <= 10) {
+    return;
   }
+
+  uint64_t current_timestamp = get_current_time();
+  uint64_t stale_threshold = 3 * plugin_get_interval();
+
+  process_entry_t** stale_processes = calloc(c_avl_size(process_tree), sizeof(process_entry_t*));
+  if (!stale_processes) {
+    ERROR("Failed to allocate memory for stale processes cleanup");
+    return;
+  }
+
+  int stale_count = 0;
+  process_entry_t* process = NULL;
+  c_avl_iterator_t* it = c_avl_get_iterator(process_tree);
+  if (it) {
+    while ((c_avl_iterator_next(it, (void*)&process, (void*)&process)) == 0) {
+      if (current_timestamp > stale_threshold + process->cpu_stats.last_elapsed_time) {
+        stale_processes[stale_count++] = process;
+      }
+    }
+    c_avl_iterator_destroy(it);
+  }
+
+  for (int i = 0; i < stale_count; i++) {
+    process = stale_processes[i];
+    INFO("Found stale process with PID %d. Removing ...\n", process->pid);
+    free_threads(process);
+    c_avl_remove(process_tree, process, NULL, NULL);
+    free(process->name);
+    free(process);
+  }
+
+  free(stale_processes);
 }
 
 static void submit_process(const process_entry_t* process) {
@@ -739,7 +806,8 @@ static void submit_thread(const thread_entry_t* thread) {
 
   vl.values = values;
   sstrncpy(vl.plugin, "processes", sizeof(vl.plugin));
-  sstrncpy(vl.plugin_instance, thread->name, sizeof(vl.plugin_instance));
+  sstrncpy(vl.plugin_instance, thread->name ? thread->name : DEFAULT_THREAD_NAME,
+            sizeof(vl.plugin_instance));
 
   sstrncpy(vl.type, "thread", sizeof(vl.type));
   vl.values[0].counter = thread->tid;
@@ -800,24 +868,52 @@ static int ps_init() {
     top_cpu_threads.entries = (thread_entry_t**)calloc(num_top_users_to_monitor, sizeof(thread_entry_t*));
     if (top_cpu_threads.entries == NULL) {
       ERROR("Failed to allocate memory for top_cpu_threads");
-      return -1;
+      goto cleanup;
     }
   }
+
   if (measure_cpu_per_process) {
     top_cpu_processes.entries = (process_entry_t**)calloc(num_top_users_to_monitor, sizeof(process_entry_t*));
     if (top_cpu_processes.entries == NULL) {
       ERROR("Failed to allocate memory for top_cpu_processes");
-      return -1;
+      goto cleanup;
     }
   }
+
   top_memory_processes.entries = (process_entry_t**)calloc(num_top_users_to_monitor, sizeof(process_entry_t*));
   if (top_memory_processes.entries == NULL) {
     ERROR("Failed to allocate memory for top_memory_processes");
-    return -1;
+    goto cleanup;
   }
+
   process_tree = c_avl_create((int (*)(const void *, const void *))compare_processes);
+  if (!process_tree) {
+    ERROR("Failed to create process tree");
+    goto cleanup;
+  }
+
   num_cpus = sysconf(_SC_NPROCESSORS_CONF);
+  if (num_cpus <= 0) {
+    ERROR("Failed to get number of CPUs");
+    goto cleanup;
+  }
+
   return 0;
+
+cleanup:
+  if (top_cpu_threads.entries) {
+    free(top_cpu_threads.entries);
+    top_cpu_threads.entries = NULL;
+  }
+  if (top_cpu_processes.entries) {
+    free(top_cpu_processes.entries);
+    top_cpu_processes.entries = NULL;
+  }
+  if (top_memory_processes.entries) {
+    free(top_memory_processes.entries);
+    top_memory_processes.entries = NULL;
+  }
+  return -1;
 }
 
 static int ps_read() {
@@ -831,21 +927,41 @@ static int ps_read() {
 }
 
 static int ps_shutdown() {
+  int process_count = c_avl_size(process_tree);
+  if (process_count == 0) {
+    c_avl_destroy(process_tree);
+    goto cleanup_arrays;
+  }
+
+  process_entry_t** all_processes = calloc(process_count, sizeof(process_entry_t*));
+  if (!all_processes) {
+    ERROR("Failed to allocate memory for shutdown cleanup");
+    c_avl_destroy(process_tree);
+    goto cleanup_arrays;
+  }
+
+  int count = 0;
   process_entry_t* process = NULL;
   c_avl_iterator_t* it = c_avl_get_iterator(process_tree);
   if (it) {
     while (c_avl_iterator_next(it, (void*)&process, (void*)&process) == 0) {
-      free_threads(process);
-      c_avl_remove(process_tree, process, NULL, NULL);
-      free(process->name);
-      process->name = NULL;
-      free(process);
-      process = NULL;
+      all_processes[count++] = process;
     }
     c_avl_iterator_destroy(it);
   }
+
+  for (int i = 0; i < count; i++) {
+    process = all_processes[i];
+    free_threads(process);
+    c_avl_remove(process_tree, process, NULL, NULL);
+    free(process->name);
+    free(process);
+  }
+
+  free(all_processes);
   c_avl_destroy(process_tree);
 
+cleanup_arrays:
   if (top_cpu_processes.entries) {
     free(top_cpu_processes.entries);
     top_cpu_processes.entries = NULL;

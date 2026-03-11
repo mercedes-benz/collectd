@@ -1522,7 +1522,38 @@ pkglib_LTLIBRARIES += memory2.la
 memory2_la_SOURCES = mbient/plugins/memory2.c
 memory2_la_CFLAGS = $(AM_CFLAGS)
 memory2_la_LDFLAGS = $(PLUGIN_LDFLAGS)
+
+test_plugin_memory2_SOURCES = mbient/plugins/memory2_test.c \
+  src/daemon/configfile.c src/daemon/types_list.c
+test_plugin_memory2_CFLAGS = $(AM_CFLAGS)
+test_plugin_memory2_LDFLAGS = $(PLUGIN_LDFLAGS) $(BUILD_WITH_LIBSYSTEMD_LDFLAGS)
+test_plugin_memory2_LDADD = \
+  liboconfig.la \
+  libplugin_mock.la \
+  libmetadata.la
+check_PROGRAMS += test_plugin_memory2
+TESTS += test_plugin_memory2
+
 endif
+
+if BUILD_PLUGIN_OSP_UDP
+pkglib_LTLIBRARIES += osp_udp.la
+osp_udp_la_SOURCES = mbient/plugins/osp_udp.c
+
+osp_udp_la_CFLAGS = $(AM_CFLAGS)
+osp_udp_la_LDFLAGS = $(PLUGIN_LDFLAGS)
+
+test_plugin_osp_udp_SOURCES = \
+  mbient/plugins/osp_udp_test.c \
+  src/daemon/configfile.c \
+  src/daemon/types_list.c
+test_plugin_osp_udp_CFLAGS = $(AM_FLAGS)
+test_plugin_osp_udp_CFLAGS = $(PLUGIN_LDFLAGS)
+test_plugin_osp_udp_CFLAGS = liboconfig.la libplugin_mock.la
+check_PROGRAMS += test_plugin_osp_udp
+TESTS += test_plugin_osp_udp
+endif
+
 
 if BUILD_PLUGIN_VRAM
 pkglib_LTLIBRARIES += vram.la
@@ -2398,6 +2429,7 @@ write_dlt_la_CPPFLAGS = -fPIC $(AM_CPPFLAGS)
 write_dlt_la_LDFLAGS = $(PLUGIN_LDFLAGS)
 write_dlt_la_LIBADD = libformat_graphite.la libformat_json.la
 if BUILD_QNX
+write_dlt_la_LDFLAGS += -Wl,-lc++
 write_dlt_la_LIBADD += -lregex
 endif
 
