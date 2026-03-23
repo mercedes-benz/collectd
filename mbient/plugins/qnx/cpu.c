@@ -116,22 +116,37 @@ static void submit_percent(int cpu_num, const char *cpu_state, gauge_t value) {
 
 static void cpu_notify() {
   const cdtime_t now = cdtime();
-
   notification_t n = {NOTIF_OKAY, now, "", "", "cpu", "", "", "", NULL};
 
   strncpy(n.message, "CPU per core usage: ", sizeof(n.message));
+  n.message[sizeof(n.message) - 1] = '\0';
+
+  size_t current_len = strlen(n.message);
   for (int i = 0; i < host_stats.num_cpus; i++) {
     char temp_string[STRING_LEN] = {0};
     ssnprintf(temp_string, sizeof(temp_string), "core %d: %.2f%%; ", i,
               host_stats.cpu_info[i].percent_active);
 
-    strncat(n.message, temp_string, sizeof(n.message) - 1);
+    size_t remaining = sizeof(n.message) - current_len - 1;
+    if (remaining > 0) {
+      size_t len = strlen(temp_string);
+      size_t copy_len = (len < remaining) ? len : remaining;
+      strncat(n.message, temp_string, remaining);
+      current_len += copy_len;
+    }
   }
   plugin_dispatch_notification(&n);
 
   ssnprintf(n.message, sizeof(n.message), "CPU total usage: %.2f%%",
             host_stats.total_load);
   plugin_dispatch_notification(&n);
+
+  const int fdesc = open("/dev/qnx-critical-logging", O_WRONLY);
+  if (fdesc != -1) {
+
+    write(fdesc, n.message, strlen(n.message) + 1);
+    close(fdesc);
+  }
 
   ssnprintf(n.message, sizeof(n.message), "CPU total SafeOS usage: %.2f%%",
             safeos_load);
@@ -150,11 +165,20 @@ static void cpu_notify() {
 
     ssnprintf(n.message, sizeof(n.message),
               "CPU per %s vCPU core usage: ", get_display_name(qvm->name));
+
+    current_len = strlen(n.message);
     for (int j = 0; j < qvm->num_vcpus; j++) {
       char temp_string[STRING_LEN] = {0};
       ssnprintf(temp_string, sizeof(temp_string), "core %d: %.2f%%; ", j,
                 qvm->vcpu_info[j].percent_active);
-      strncat(n.message, temp_string, sizeof(n.message) - 1);
+
+      size_t remaining = sizeof(n.message) - current_len - 1;
+      if (remaining > 0) {
+        size_t len = strlen(temp_string);
+        size_t copy_len = (len < remaining) ? len : remaining;
+        strncat(n.message, temp_string, remaining);
+        current_len += copy_len;
+      }
     }
     plugin_dispatch_notification(&n);
   }
@@ -183,7 +207,12 @@ calculate_cpu_percent_active(const procfs_status *const thread_status,
 
   cpu_info->sutime = sutime;
   cpu_info->uptime = uptime;
-  cpu_info->percent_active = ((double)delta_sutime / delta_uptime) * 100.0;
+
+  if (delta_uptime > 0) {
+    cpu_info->percent_active = ((double)delta_sutime / delta_uptime) * 100.0;
+  } else {
+    cpu_info->percent_active = 0.0;
+  }
 }
 
 static int get_cpus_load() {
@@ -248,12 +277,27 @@ static int detect_qvms() {
   }
 
   while ((ent = readdir(dir)) != NULL) {
+    if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) {
+      continue;
+    }
+
+    if (qvm_num >= MAX_QVM_NUM) {
+      WARNING("Maximum number of QVMs (%d) reached, ignoring additional QVMs", MAX_QVM_NUM);
+      break;
+    }
+
     char fullpath[1024];
     snprintf(fullpath, sizeof(fullpath), "%s/%s", qvm_dir, ent->d_name);
+
     if (stat(fullpath, &statbuf) == 0 && S_ISDIR(statbuf.st_mode)) {
       qvm_stats[qvm_num].name = strdup(ent->d_name);
       if (qvm_stats[qvm_num].name == NULL) {
         ERROR("Out of memory!");
+        for (int i = 0; i < qvm_num; i++) {
+          free(qvm_stats[i].name);
+          qvm_stats[i].name = NULL;
+        }
+        closedir(dir);
         return -1;
       }
       qvm_num++;
@@ -287,7 +331,6 @@ static int get_qvm_pid(char *qvm_name) {
 
 static int get_num_qvm_vcpus(int qvm_index) {
   int num_vcpus = 0;
-  char path[STRING_LEN] = {0};
   int qvm_pid = qvm_stats[qvm_index].pid;
 
   if (qvm_pid <= 0) {
@@ -295,18 +338,12 @@ static int get_num_qvm_vcpus(int qvm_index) {
     return -1;
   }
 
-  snprintf(path, sizeof(path), "/proc/%d/ctl", qvm_pid);
-  int fd = open(path, O_RDONLY);
-  if (fd == -1) {
-    ERROR("Failed to open %s: %s", path, strerror(errno));
-    return -1;
-  }
-
   char threadname[_NTO_THREAD_NAME_MAX] = {0};
   procfs_status thread_status;
 
   /* virtual CPU thread IDs are sequential and start from TID 2 */
-  for (int i = 0;; i++) {
+  const int MAX_VCPUS = 256;
+  for (int i = 0; i < MAX_VCPUS; i++) {
     thread_status.tid = i + 2;
     if (__getset_thread_name(qvm_pid, thread_status.tid, NULL, -1, threadname,
                              sizeof(threadname)) == EOK) {
@@ -317,7 +354,7 @@ static int get_num_qvm_vcpus(int qvm_index) {
       }
     }
   }
-  close(fd);
+
   return num_vcpus;
 }
 
@@ -346,16 +383,16 @@ static int handle_qvm_reset(int qvm_index) {
   if (num_vcpus != qvm->num_vcpus) {
     INFO("Number of vCPUs for %s VM changed from %d to %d",
          get_display_name(qvm->name), qvm->num_vcpus, num_vcpus);
-    qvm->num_vcpus = num_vcpus;
     if (qvm->vcpu_info) {
       free(qvm->vcpu_info);
       qvm->vcpu_info = NULL;
     }
-    qvm->vcpu_info = calloc(qvm->num_vcpus, sizeof(cpu_info_t));
+    qvm->vcpu_info = calloc(num_vcpus, sizeof(cpu_info_t));
     if (qvm->vcpu_info == NULL) {
       ERROR("Out of memory!");
       return -1;
     }
+    qvm->num_vcpus = num_vcpus;
   } else {
     memset(qvm->vcpu_info, 0, qvm->num_vcpus * sizeof(cpu_info_t));
   }
@@ -426,7 +463,7 @@ static int cpu_init() {
   num_running_qvms = detect_qvms();
   if (num_running_qvms < 0) {
     ERROR("Failed to detect running QVMs");
-    return -1;
+    goto cleanup;
   }
 
   for (int i = 0; i < num_running_qvms; i++) {
@@ -434,21 +471,42 @@ static int cpu_init() {
     qvm->pid = get_qvm_pid(qvm->name);
     if (qvm->pid == -1) {
       ERROR("Failed to get PID for %s", get_display_name(qvm->name));
-      return -1;
+      num_running_qvms = i;  // Only cleanup what was allocated
+      goto cleanup;
     }
     qvm->num_vcpus = get_num_qvm_vcpus(i);
     if (qvm->num_vcpus == -1) {
       ERROR("Failed to get number of vCPUs for %s VM",
             get_display_name(qvm->name));
-      return -1;
+      num_running_qvms = i;
+      goto cleanup;
     }
     qvm->vcpu_info = calloc(qvm->num_vcpus, sizeof(cpu_info_t));
     if (qvm->vcpu_info == NULL) {
       ERROR("Out of memory!");
-      return -1;
+      num_running_qvms = i;
+      goto cleanup;
     }
   }
   return 0;
+
+cleanup:
+  if (host_stats.cpu_info) {
+    free(host_stats.cpu_info);
+    host_stats.cpu_info = NULL;
+  }
+  for (int i = 0; i < num_running_qvms; i++) {
+    if (qvm_stats[i].vcpu_info) {
+      free(qvm_stats[i].vcpu_info);
+      qvm_stats[i].vcpu_info = NULL;
+    }
+    if (qvm_stats[i].name) {
+      free(qvm_stats[i].name);
+      qvm_stats[i].name = NULL;
+    }
+  }
+  num_running_qvms = 0;
+  return -1;
 }
 
 static int cpu_read() {
@@ -475,6 +533,11 @@ static int cpu_read() {
     total_qvm_load += qvm_stats[i].total_load;
   }
   safeos_load = host_stats.total_load - total_qvm_load;
+
+  /* Ensure it is not negative */
+  if (safeos_load < 0) {
+    safeos_load = 0;
+  }
 
   cpu_notify();
   cpu_submit();

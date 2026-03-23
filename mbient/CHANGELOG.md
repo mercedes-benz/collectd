@@ -5,6 +5,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [5.12.1-36] - 2026-03-09
+
+### Added
+
+- osp_udp plugin:
+  - collect UDP packet loss statistics
+- memory2 plugin:
+  - pagescan direct, pagescan direct throttle
+  - unit tests for parsing functions
+- cgroup2 plugin:
+  - pagescan counter per cgroup in memory pressure log
+- cpu plugin:
+  - cpu total usage. The information also redirected to /dev/qnx-critical-logging.
+- gpu plugin:
+  - gpu total usage redirected to /dev/qnx-critical-logging.
+
+### Changed
+
+- memory2 plugin:
+  - source code refactoring
+- processes2 plugin
+  - io top log source changes to storage layer
+- QNX GPU plugin
+  - report process name instead of full process path
+- unixsock plugin:
+  - avoid too unnecessary write calls from listval
+
+### Fixed
+
+- QNX plugins:
+  - fixed crash due to incorrect cleaning up of AVL tree entries in memory plugin
+  - other minor fixes
+- processes2 plugin:
+  - avoid duplicate process names containing non-alphanumeric characters
+
 ## [5.12.1-35] - 2025-09-15
 
 ### Changed
@@ -63,17 +98,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Added
 
 - core:
-
   - new global option `ClockType` for flexible time measurement
   - added benchmarks for dispatching values and notifications
 
 - memory2 plugin:
-
   - swaptotal/swapfree/swapcached in memory total log.
   - orig/compr/used/ratio in memory zram log.
 
 - cgroups2:
-
   - cgroup memory swap usage log added if swap memory enabled
 
 - processes2:
@@ -185,11 +217,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Added
 
 - cgroup2 plugin:
-
   - option `MountCache`: read mount information only ones, default `true`
 
 - processes2 plugin:
-
   - new configuration `NotifyMemTopSingleLine 10` that logs top 10
     memory consumers list to single line
 

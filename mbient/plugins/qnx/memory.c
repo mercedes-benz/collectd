@@ -345,7 +345,7 @@ static void add_carveout_to_monitor(const char* name) {
     ERROR("Exceeded the maximum number of carveouts to monitor!");
     return;
   }
-  strcpy(carveouts_to_monitor[num_carveouts_to_monitor++], name);
+  sstrncpy(carveouts_to_monitor[num_carveouts_to_monitor++], name, MAX_STRING_LEN);
 }
 
 static int compare_files(const void* f1, const void* f2) {
@@ -387,6 +387,7 @@ void traverse_dir(const char* dir, shmem_dir_stat_t* dir_stat) {
     struct stat st;
     if (stat(path, &st) == -1) {
       ERROR("Failed to stat %s directory (error %s)!", path, strerror(errno));
+      closedir(d);
       return;
     }
 
@@ -397,6 +398,12 @@ void traverse_dir(const char* dir, shmem_dir_stat_t* dir_stat) {
     if (S_ISDIR(st.st_mode)) {
       traverse_dir(path, dir_stat);
     } else {
+      if (dir_stat->num_files >= MAX_SHMEM_ENTRIES) {
+        WARNING("Maximum number of shmem entries (%d) reached, ignoring remaining files",
+                MAX_SHMEM_ENTRIES);
+        break;  // Break out of loop, closedir() will be called below
+      }
+
       shmem_file_stat_t* file_stat = &dir_stat->files[dir_stat->num_files];
       snprintf(file_stat->name, sizeof(file_stat->name), "%s", entry->d_name);
       file_stat->size = st.st_size;
@@ -525,7 +532,7 @@ static void memory_notify() {
             shmem_info->total_size / 1024.0 / 1024.0, shmem_info->num_files);
   plugin_dispatch_notification(&n);
 
-  strncpy(msg, "top 10 shmem allocations - name/size(MB)/user", msg_size);
+  sstrncpy(msg, "top 10 shmem allocations - name/size(MB)/user", msg_size);
   memset(&buf, 0, sizeof(buf));
   for (int i = 0; i < 10; i++) {
     if (i >= shmem_info->num_files) {
@@ -548,8 +555,10 @@ static void memory_notify() {
   }
 
   plugin_dispatch_notification(&n);
-  if (n.meta != NULL)
+  if (n.meta != NULL) {
     plugin_notification_meta_free(n.meta);
+    n.meta = NULL;
+  }
 }
 
 static int memory_init(void) {

@@ -203,6 +203,8 @@ typedef struct procstat_entry_s {
 #define P2_CMP_REGEX 2
 #define P2_CMP_EXACT 3
 #define P2_CMP_START 4
+#define P2_CMP_EXACT_ALNUM 5
+#define P2_CMP_START_ALNUM 6
 
 typedef struct p2_pattern_s {
 #if HAVE_REGEX_H
@@ -263,13 +265,13 @@ typedef struct procstat {
 
   // io data
   derive_t io_rchar;
-  derive_t io_rchar_last;
   derive_t io_wchar;
-  derive_t io_wchar_last;
   derive_t io_syscr;
   derive_t io_syscw;
   derive_t io_diskr;
+  derive_t io_diskr_last;
   derive_t io_diskw;
+  derive_t io_diskw_last;
 
   derive_t cswitch_vol;
   derive_t cswitch_invol;
@@ -523,6 +525,184 @@ static unsigned long long p2_get_ull(const char **buf) {
 }
 
 //==============================================================================
+// Sort functions
+//==============================================================================
+
+//------------------------------------------------------------------------------
+// Lookup table: maps each byte to its comparison key.
+// Alphanumeric chars map to themselves, everything else maps to 0.
+static const unsigned char p2_alnum_key[256] = {
+    /* 0x00-0x2F: non-alnum */
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    /* 0x30-0x39: '0'-'9' */
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+    /* 0x3A-0x40: non-alnum */
+    0, 0, 0, 0, 0, 0, 0,
+    /* 0x41-0x5A: 'A'-'Z' */
+    'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O',
+    'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
+    /* 0x5B-0x60: non-alnum */
+    0, 0, 0, 0, 0, 0,
+    /* 0x61-0x7A: 'a'-'z' */
+    'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o',
+    'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
+    /* 0x7B-0xFF: non-alnum */
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0};
+
+//------------------------------------------------------------------------------
+static int p2_strcmp_alnum(const char *s1, const char *s2) {
+  const unsigned char *p1 = (const unsigned char *)s1;
+  const unsigned char *p2 = (const unsigned char *)s2;
+
+  while (1) {
+    unsigned char k1 = p2_alnum_key[*p1];
+    unsigned char k2 = p2_alnum_key[*p2];
+
+    if (k1 != k2)
+      return (int)k1 - (int)k2;
+
+    if (*p1 == '\0' || *p2 == '\0')
+      return (int)*p1 - (int)*p2;
+
+    p1++;
+    p2++;
+  }
+  return 0;
+}
+
+//------------------------------------------------------------------------------
+static int p2_strncmp_alnum(const char *s1, const char *s2, size_t n) {
+  const unsigned char *p1 = (const unsigned char *)s1;
+  const unsigned char *p2 = (const unsigned char *)s2;
+
+  if (n == 0)
+    return 0;
+
+  while (n--) {
+    unsigned char k1 = p2_alnum_key[*p1];
+    unsigned char k2 = p2_alnum_key[*p2];
+
+    if (k1 != k2)
+      return (int)k1 - (int)k2;
+
+    if (*p1 == '\0' || *p2 == '\0')
+      return (int)*p1 - (int)*p2;
+
+    p1++;
+    p2++;
+  }
+
+  return 0;
+}
+
+//------------------------------------------------------------------------------
+int sort_entry_cpu(const void *a, const void *b) {
+  procstat_entry_t *e1 = *(procstat_entry_t **)b;
+  procstat_entry_t *e2 = *(procstat_entry_t **)a;
+  return NUMERIC_CMP(e1->cpu_system_counter + e1->cpu_user_counter,
+                     e2->cpu_system_counter + e2->cpu_user_counter);
+}
+
+//------------------------------------------------------------------------------
+int sort_cpu_user_now(const void *a, const void *b) {
+  procstat_t *proc1 = *(procstat_t **)b;
+  procstat_t *proc2 = *(procstat_t **)a;
+  return NUMERIC_CMP(proc1->cpu_user_last, proc2->cpu_user_last);
+}
+
+//------------------------------------------------------------------------------
+int sort_cpu_system_now(const void *a, const void *b) {
+  procstat_t *proc1 = *(procstat_t **)b;
+  procstat_t *proc2 = *(procstat_t **)a;
+  return NUMERIC_CMP(proc1->cpu_system_last, proc2->cpu_system_last);
+}
+
+//------------------------------------------------------------------------------
+int sort_cpu_total_now(const void *a, const void *b) {
+  procstat_t *proc1 = *(procstat_t **)b;
+  procstat_t *proc2 = *(procstat_t **)a;
+  return NUMERIC_CMP((proc1->cpu_system_last + proc1->cpu_user_last),
+                     (proc2->cpu_system_last + proc2->cpu_user_last));
+}
+
+//------------------------------------------------------------------------------
+int sort_cpu_user_all(const void *a, const void *b) {
+  procstat_t *proc1 = *(procstat_t **)b;
+  procstat_t *proc2 = *(procstat_t **)a;
+  return NUMERIC_CMP(proc1->cpu_user_counter, proc2->cpu_user_counter);
+}
+
+//------------------------------------------------------------------------------
+int sort_cpu_system_all(const void *a, const void *b) {
+  procstat_t *proc1 = *(procstat_t **)b;
+  procstat_t *proc2 = *(procstat_t **)a;
+  return NUMERIC_CMP(proc1->cpu_system_counter, proc2->cpu_system_counter);
+}
+
+//------------------------------------------------------------------------------
+int sort_cpu_total_all(const void *a, const void *b) {
+  procstat_t *proc1 = *(procstat_t **)b;
+  procstat_t *proc2 = *(procstat_t **)a;
+  return NUMERIC_CMP((proc1->cpu_system_counter + proc1->cpu_user_counter),
+                     (proc2->cpu_system_counter + proc2->cpu_user_counter));
+}
+
+//------------------------------------------------------------------------------
+int sort_vmem_rss(const void *a, const void *b) {
+  procstat_t *proc1 = *(procstat_t **)b;
+  procstat_t *proc2 = *(procstat_t **)a;
+  return NUMERIC_CMP(proc1->vmem_rss, proc2->vmem_rss);
+}
+
+//------------------------------------------------------------------------------
+int sort_io_disk_rd(const void *a, const void *b) {
+  procstat_t *proc1 = *(procstat_t **)b;
+  procstat_t *proc2 = *(procstat_t **)a;
+  return NUMERIC_CMP(proc1->io_diskr_last, proc2->io_diskr_last);
+}
+
+//------------------------------------------------------------------------------
+int sort_io_disk_wr(const void *a, const void *b) {
+  procstat_t *proc1 = *(procstat_t **)b;
+  procstat_t *proc2 = *(procstat_t **)a;
+  return NUMERIC_CMP(proc1->io_diskw_last, proc2->io_diskw_last);
+}
+
+//------------------------------------------------------------------------------
+int sort_vmem_rssdiff(const void *a, const void *b) {
+  procstat_t *proc1 = *(procstat_t **)a;
+  procstat_t *proc2 = *(procstat_t **)b;
+
+  // Calculate signed differences to determine direction
+  long asigned_diff = (long)proc1->vmem_rss - (long)proc1->vmem_rss_last;
+  long bsigned_diff = (long)proc2->vmem_rss - (long)proc2->vmem_rss_last;
+
+  // Calculate absolute differences
+  unsigned long adiff = (asigned_diff >= 0) ? asigned_diff : -asigned_diff;
+  unsigned long bdiff = (bsigned_diff >= 0) ? bsigned_diff : -bsigned_diff;
+
+  // Primary sort: by absolute difference (descending)
+  if (adiff > bdiff)
+    return -1;
+  if (adiff < bdiff)
+    return 1;
+
+  // Secondary sort: when absolute values are equal, positive differences first
+  if (asigned_diff > 0 && bsigned_diff <= 0)
+    return -1;
+  if (asigned_diff <= 0 && bsigned_diff > 0)
+    return 1;
+
+  return 0;
+}
+
+//==============================================================================
 // Format
 //==============================================================================
 
@@ -621,6 +801,78 @@ static char *p2_format_cgroup(const char *cgroup, char *res, size_t res_len) {
   return res;
 }
 
+//------------------------------------------------------------------------------
+int p2_list_pids(char **bufp, size_t *bufn, procstat_entry_t *start,
+                 size_t max_num) {
+
+  int r;
+
+  if (max_num == 0) {
+    return 0;
+  }
+  if (start == NULL) {
+    return 0;
+  }
+
+  int entries_num = 0;
+  for (procstat_entry_t *inst = start; inst != NULL; inst = inst->next) {
+    ++entries_num;
+  }
+
+  // shortcut for single process
+  if (entries_num == 1) {
+    r = snprintf(*bufp, *bufn, "%lu", start->id);
+    if (r < 0 || r > *bufn) {
+      return -1;
+    }
+    *bufp += r;
+    *bufn -= r;
+    return 0;
+  }
+
+  procstat_entry_t **sort_arr =
+      malloc(entries_num * sizeof(procstat_entry_t *));
+  if (sort_arr == NULL) {
+    ERROR(LOG_KEY "p2_list_pids: malloc failed.");
+    return -1;
+  }
+
+  procstat_entry_t **sort_ptr = sort_arr;
+  entries_num = 0;
+  for (procstat_entry_t *inst = start; inst != NULL; inst = inst->next) {
+    // ensure a minimal cpu consumption
+    if (inst->cpu_system_counter > 0 || inst->cpu_user_counter > 0) {
+      *sort_ptr++ = inst;
+      ++entries_num;
+    }
+  }
+
+  qsort(sort_arr, entries_num, sizeof(procstat_entry_t *), sort_entry_cpu);
+
+  size_t num = entries_num > max_num ? max_num : entries_num;
+
+  for (size_t co = 0; co < num; ++co) {
+    const procstat_entry_t *e = sort_arr[co];
+    r = snprintf(*bufp, *bufn, "%s%lu", co == 0 ? "" : ",", e->id);
+    if (r < 0 || r > *bufn) {
+      break;
+    }
+    *bufp += r;
+    *bufn -= r;
+  }
+
+  if (entries_num > max_num) {
+    r = snprintf(*bufp, *bufn, ",...");
+    if (r >= 0 && r <= *bufn) {
+      *bufp += r;
+      *bufn -= r;
+    }
+  }
+
+  free(sort_arr);
+  return 0;
+}
+
 //==============================================================================
 // Pattern
 //==============================================================================
@@ -708,6 +960,10 @@ static bool p2_pattern_match(p2_pattern_t *pattern, const char *input) {
     return strcmp(pattern->str, input) == 0;
   case P2_CMP_START:
     return strncmp(pattern->str, input, pattern->len) == 0;
+  case P2_CMP_EXACT_ALNUM:
+    return p2_strcmp_alnum(pattern->str, input) == 0;
+  case P2_CMP_START_ALNUM:
+    return p2_strncmp_alnum(pattern->str, input, pattern->len) == 0;
   default:
     WARNING(LOG_KEY "unknown compare type %d", pattern->cmp);
     return false;
@@ -1064,8 +1320,8 @@ static void p2_statlist_entry_reset(procstat_t *ps) {
   ps->vmem_swap_last = ps->vmem_swap;
   ps->vmem_swap = 0;
   ps->stack_size = 0;
-  ps->io_rchar_last = 0;
-  ps->io_wchar_last = 0;
+  ps->io_diskr_last = 0;
+  ps->io_diskw_last = 0;
   ps->cpu_user_last = 0;
   ps->cpu_user_percent_now = 0;
   ps->cpu_user_percent_all = 0;
@@ -1247,8 +1503,6 @@ static bool p2_statlist_match(proc_cluster_t *cluster, const char *name,
                               const char *cmdline, const char *username,
                               const char *cgroup, procstat_t **ps_ptr) {
 #define LOG_KEY_FUNC LOG_KEY "p2_statlist_match()"
-  // DEBUG(LOG_KEY_FUNC "name=%s, cmd=%s, user=%s, cgroup=%s against %s", name,
-  //       cmdline, username, cgroup, (*ps_ptr)->name);
   procstat_t *ps = *ps_ptr;
 
   const char *check_name = cmdline == NULL ? name : cmdline;
@@ -1264,9 +1518,6 @@ static bool p2_statlist_match(proc_cluster_t *cluster, const char *name,
     return false;
   if (strchr(ps->name, '%') == NULL)
     return true;
-
-  // DEBUG(LOG_KEY_FUNC "name=%s, cmd=%s, user=%s, cgroup=%s against %s", name,
-  //       cmdline, username, cgroup, (*ps_ptr)->name);
 
   // name composition
   char name_buffer[DATA_MAX_NAME_LEN];
@@ -1316,8 +1567,8 @@ static bool p2_statlist_match(proc_cluster_t *cluster, const char *name,
 
       cmd_buffer[cmd_bufpos] = '\0';
       cmd_pattern = cmd_buffer;
-      cmd_cmp =
-          strcmp(cmd_buffer, check_name) == 0 ? P2_CMP_EXACT : P2_CMP_START;
+      cmd_cmp = strcmp(cmd_buffer, check_name) == 0 ? P2_CMP_EXACT_ALNUM
+                                                    : P2_CMP_START_ALNUM;
       break;
     case ('U'):
       name_bufpos =
@@ -1485,9 +1736,9 @@ static void p2_statlist_add(cdtime_t now, proc_cluster_t *cluster,
     ps->stack_size += entry->stack_size;
 
     if ((entry->io_rchar != -1) && (entry->io_wchar != -1)) {
-      p2_stat_update_counter(&ps->io_rchar, &ps->io_rchar_last, &pse->io_rchar,
+      p2_stat_update_counter(&ps->io_rchar, NULL, &pse->io_rchar,
                              entry->io_rchar);
-      p2_stat_update_counter(&ps->io_wchar, &ps->io_wchar_last, &pse->io_wchar,
+      p2_stat_update_counter(&ps->io_wchar, NULL, &pse->io_wchar,
                              entry->io_wchar);
     }
 
@@ -1499,9 +1750,9 @@ static void p2_statlist_add(cdtime_t now, proc_cluster_t *cluster,
     }
 
     if ((entry->io_diskr != -1) && (entry->io_diskw != -1)) {
-      p2_stat_update_counter(&ps->io_diskr, NULL, &pse->io_diskr,
+      p2_stat_update_counter(&ps->io_diskr, &ps->io_diskr_last, &pse->io_diskr,
                              entry->io_diskr);
-      p2_stat_update_counter(&ps->io_diskw, NULL, &pse->io_diskw,
+      p2_stat_update_counter(&ps->io_diskw, &ps->io_diskw_last, &pse->io_diskw,
                              entry->io_diskw);
     }
 
@@ -1690,90 +1941,6 @@ static void p2_cluster_destroy(void) {
     p2_statlist_destroy(pc_prev->procs);
     free(pc_prev);
   }
-}
-
-//------------------------------------------------------------------------------
-int sort_cpu_user_now(const void *a, const void *b) {
-  procstat_t *proc1 = *(procstat_t **)b;
-  procstat_t *proc2 = *(procstat_t **)a;
-  return NUMERIC_CMP(proc1->cpu_user_last, proc2->cpu_user_last);
-}
-
-int sort_cpu_system_now(const void *a, const void *b) {
-  procstat_t *proc1 = *(procstat_t **)b;
-  procstat_t *proc2 = *(procstat_t **)a;
-  return NUMERIC_CMP(proc1->cpu_system_last, proc2->cpu_system_last);
-}
-
-int sort_cpu_total_now(const void *a, const void *b) {
-  procstat_t *proc1 = *(procstat_t **)b;
-  procstat_t *proc2 = *(procstat_t **)a;
-  return NUMERIC_CMP((proc1->cpu_system_last + proc1->cpu_user_last),
-                     (proc2->cpu_system_last + proc2->cpu_user_last));
-}
-
-int sort_cpu_user_all(const void *a, const void *b) {
-  procstat_t *proc1 = *(procstat_t **)b;
-  procstat_t *proc2 = *(procstat_t **)a;
-  return NUMERIC_CMP(proc1->cpu_user_counter, proc2->cpu_user_counter);
-}
-
-int sort_cpu_system_all(const void *a, const void *b) {
-  procstat_t *proc1 = *(procstat_t **)b;
-  procstat_t *proc2 = *(procstat_t **)a;
-  return NUMERIC_CMP(proc1->cpu_system_counter, proc2->cpu_system_counter);
-}
-
-int sort_cpu_total_all(const void *a, const void *b) {
-  procstat_t *proc1 = *(procstat_t **)b;
-  procstat_t *proc2 = *(procstat_t **)a;
-  return NUMERIC_CMP((proc1->cpu_system_counter + proc1->cpu_user_counter),
-                     (proc2->cpu_system_counter + proc2->cpu_user_counter));
-}
-
-int sort_vmem_rss(const void *a, const void *b) {
-  procstat_t *proc1 = *(procstat_t **)b;
-  procstat_t *proc2 = *(procstat_t **)a;
-  return NUMERIC_CMP(proc1->vmem_rss, proc2->vmem_rss);
-}
-
-int sort_io_rd(const void *a, const void *b) {
-  procstat_t *proc1 = *(procstat_t **)b;
-  procstat_t *proc2 = *(procstat_t **)a;
-  return NUMERIC_CMP(proc1->io_rchar_last, proc2->io_rchar_last);
-}
-
-int sort_io_wr(const void *a, const void *b) {
-  procstat_t *proc1 = *(procstat_t **)b;
-  procstat_t *proc2 = *(procstat_t **)a;
-  return NUMERIC_CMP(proc1->io_wchar_last, proc2->io_wchar_last);
-}
-
-int sort_vmem_rssdiff(const void *a, const void *b) {
-  procstat_t *proc1 = *(procstat_t **)a;
-  procstat_t *proc2 = *(procstat_t **)b;
-
-  // Calculate signed differences to determine direction
-  long asigned_diff = (long)proc1->vmem_rss - (long)proc1->vmem_rss_last;
-  long bsigned_diff = (long)proc2->vmem_rss - (long)proc2->vmem_rss_last;
-
-  // Calculate absolute differences
-  unsigned long adiff = (asigned_diff >= 0) ? asigned_diff : -asigned_diff;
-  unsigned long bdiff = (bsigned_diff >= 0) ? bsigned_diff : -bsigned_diff;
-
-  // Primary sort: by absolute difference (descending)
-  if (adiff > bdiff)
-    return -1;
-  if (adiff < bdiff)
-    return 1;
-
-  // Secondary sort: when absolute values are equal, positive differences first
-  if (asigned_diff > 0 && bsigned_diff <= 0)
-    return -1;
-  if (asigned_diff <= 0 && bsigned_diff > 0)
-    return 1;
-
-  return 0;
 }
 
 //------------------------------------------------------------------------------
@@ -2158,16 +2325,7 @@ static void p2_cluster_notify(cdtime_t now) {
           bufp += r;
           bufn -= r;
 
-          for (procstat_entry_t *inst = cur->instances; inst != NULL;
-               inst = inst->next) {
-            r = snprintf(bufp, bufn, "%s%lu",
-                         (inst == cur->instances) ? "" : ",", inst->id);
-            if (r < 0 || r > bufn) {
-              break;
-            }
-            bufp += r;
-            bufn -= r;
-          }
+          p2_list_pids(&bufp, &bufn, cur->instances, 10);
 
           if (plugin_notification_meta_add_string(&n, "", buf) != 0) {
             ERROR(LOG_KEY "Error adding meta information to notification.");
@@ -2256,13 +2414,13 @@ static void p2_cluster_notify(cdtime_t now) {
       p2_pretty_size(rss_buf, sizeof(rss_buf), top_vmem_rss);
       p2_pretty_size(size_buf, sizeof(size_buf), top_vmem_size);
 
-      ssnprintf(
-          n.message, sizeof(n.message),
-          "top-mem-%s-sum: mem=%s(%s), cpu=%.1f%%(%.1f%%), usr=%.1f%%(%.1f%%), "
-          "sys=%.1f%%(%.1f%%), prc=%lu, thr=%lu",
-          pc->name, rss_buf, size_buf, user_now + system_now,
-          user_all + system_all, user_now, user_all, system_now, system_all,
-          top_num_proc, top_num_lwp);
+      ssnprintf(n.message, sizeof(n.message),
+                "top-mem-%s-sum: mem=%s(%s), cpu=%.1f%%(%.1f%%), "
+                "usr=%.1f%%(%.1f%%), "
+                "sys=%.1f%%(%.1f%%), prc=%lu, thr=%lu",
+                pc->name, rss_buf, size_buf, user_now + system_now,
+                user_all + system_all, user_now, user_all, system_now,
+                system_all, top_num_proc, top_num_lwp);
       plugin_dispatch_notification(&n);
       if (n.meta != NULL)
         plugin_notification_meta_free(n.meta);
@@ -2326,17 +2484,7 @@ static void p2_cluster_notify(cdtime_t now) {
           bufp += r;
           bufn -= r;
 
-          for (procstat_entry_t *inst = cur->instances; inst != NULL;
-               inst = inst->next) {
-            r = snprintf(bufp, bufn, "%s%lu",
-                         (inst == cur->instances) ? "" : ",", inst->id);
-
-            if (r < 0 || r > bufn) {
-              break;
-            }
-            bufp += r;
-            bufn -= r;
-          }
+          p2_list_pids(&bufp, &bufn, cur->instances, 10);
 
           if (plugin_notification_meta_add_string(&n, "", buf) != 0) {
             ERROR(LOG_KEY "Error adding meta information to notification.");
@@ -2353,7 +2501,7 @@ static void p2_cluster_notify(cdtime_t now) {
     //..........................................................................
     // sort by total io read usage
     if (pc->notify_io_top_read_single_line > 0) {
-      qsort(sort_arr, num, sizeof(procstat_t *), sort_io_rd);
+      qsort(sort_arr, num, sizeof(procstat_t *), sort_io_disk_rd);
 
       // send notifications
       notification_t n = {NOTIF_OKAY, now,      "", "",  PLUGIN_NAME,
@@ -2364,7 +2512,7 @@ static void p2_cluster_notify(cdtime_t now) {
       char *msgp = n.message;
       size_t msgn = sizeof(n.message);
 
-      snprintf(msgp, msgn, "io top processes rd - process/rd(MB/s)/pid");
+      snprintf(msgp, msgn, "io top processes rd - process/rd(KB/s)/pid");
 
       for (int co = 0; (co < num) &&
                        ((co < pc->notify_io_top_read_single_line) || log_self);
@@ -2377,7 +2525,7 @@ static void p2_cluster_notify(cdtime_t now) {
 
           unsigned int interval = interval_now / 1000000;
           ssnprintf(io_rbuf, sizeof(io_rbuf), "%.2f",
-                    ((double)cur->io_rchar_last) / 1024 / 1024 / interval);
+                    ((double)cur->io_diskr_last) / 1024 / interval);
 
           char buf[256] = {0};
           char *bufp = buf;
@@ -2391,17 +2539,7 @@ static void p2_cluster_notify(cdtime_t now) {
           bufp += r;
           bufn -= r;
 
-          for (procstat_entry_t *inst = cur->instances; inst != NULL;
-               inst = inst->next) {
-            r = snprintf(bufp, bufn, "%s%lu",
-                         (inst == cur->instances) ? "" : ",", inst->id);
-
-            if (r < 0 || r > bufn) {
-              break;
-            }
-            bufp += r;
-            bufn -= r;
-          }
+          p2_list_pids(&bufp, &bufn, cur->instances, 10);
 
           if (plugin_notification_meta_add_string(&n, "", buf) != 0) {
             ERROR(LOG_KEY "Error adding meta information to notification.");
@@ -2418,7 +2556,7 @@ static void p2_cluster_notify(cdtime_t now) {
     //..........................................................................
     // sort by total io write usage
     if (pc->notify_io_top_write_single_line > 0) {
-      qsort(sort_arr, num, sizeof(procstat_t *), sort_io_wr);
+      qsort(sort_arr, num, sizeof(procstat_t *), sort_io_disk_wr);
 
       // send notifications
       notification_t n = {NOTIF_OKAY, now,      "", "",  PLUGIN_NAME,
@@ -2429,7 +2567,7 @@ static void p2_cluster_notify(cdtime_t now) {
       char *msgp = n.message;
       size_t msgn = sizeof(n.message);
 
-      snprintf(msgp, msgn, "io top processes wr - process/wr(MB/s)/pid");
+      snprintf(msgp, msgn, "io top processes wr - process/wr(KB/s)/pid");
 
       for (int co = 0; (co < num) &&
                        ((co < pc->notify_io_top_write_single_line) || log_self);
@@ -2442,7 +2580,7 @@ static void p2_cluster_notify(cdtime_t now) {
 
           unsigned int interval = interval_now / 1000000;
           ssnprintf(io_wbuf, sizeof(io_wbuf), "%.2f",
-                    ((double)cur->io_wchar_last) / 1024 / 1024 / interval);
+                    ((double)cur->io_diskw_last) / 1024 / interval);
 
           char buf[256] = {0};
           char *bufp = buf;
@@ -2456,17 +2594,7 @@ static void p2_cluster_notify(cdtime_t now) {
           bufp += r;
           bufn -= r;
 
-          for (procstat_entry_t *inst = cur->instances; inst != NULL;
-               inst = inst->next) {
-            r = snprintf(bufp, bufn, "%s%lu",
-                         (inst == cur->instances) ? "" : ",", inst->id);
-
-            if (r < 0 || r > bufn) {
-              break;
-            }
-            bufp += r;
-            bufn -= r;
-          }
+          p2_list_pids(&bufp, &bufn, cur->instances, 10);
 
           if (plugin_notification_meta_add_string(&n, "", buf) != 0) {
             ERROR(LOG_KEY "Error adding meta information to notification.");

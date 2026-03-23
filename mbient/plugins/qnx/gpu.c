@@ -359,7 +359,9 @@ static void gpu_per_process_busy_slog2_callback(void* payload, regmatch_t* match
     }
   }
 
-  strncpy(process->process_name, process_name, MAX_STRING_LEN);
+  char* stripped_name = strrchr(process_name, '/');
+  sstrncpy(process->process_name, stripped_name ? stripped_name + 1: process_name,
+            MAX_STRING_LEN);
   process->pid = atoi(pid);
   process->gpu_busy = atof(gpu_busy);
   process->ctxtid = atoi(ctxtid);
@@ -457,6 +459,13 @@ static void gpu_notify(gpu_busy_t* gpu) {
           gpu->total_gpu_busy);
 
   plugin_dispatch_notification(&n);
+
+  const int fdesc = open("/dev/qnx-critical-logging", O_WRONLY);
+  if (fdesc != -1) {
+
+    write(fdesc, n.message, strlen(n.message) + 1);
+    close(fdesc);
+  }
 
   strncpy(n.message, "GPU top processes - process/GPU usage/CtxtID",  sizeof(n.message));
   for (int i = 0; i < gpu->num_of_gpu_processes; i++) {

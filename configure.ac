@@ -6870,6 +6870,7 @@ plugin_mcelog="no"
 plugin_mdevents="no"
 plugin_memory="no"
 plugin_memory2="no"
+plugin_osp_udp="no"
 plugin_multimeter="no"
 plugin_netstat_udp="no"
 plugin_nfs="no"
@@ -6962,6 +6963,7 @@ if test "x$ac_system" = "xLinux"; then
   plugin_mdevents="yes"
   plugin_memory="yes"
   plugin_memory2="yes"
+  plugin_osp_udp="yes"
   plugin_nfs="yes"
   plugin_numa="yes"
   plugin_processes="yes"
@@ -7399,6 +7401,7 @@ AC_PLUGIN([memcachec],           [$with_libmemcached],        [memcachec statist
 AC_PLUGIN([memcached],           [yes],                       [memcached statistics])
 AC_PLUGIN([memory],              [$plugin_memory],            [Memory usage])
 AC_PLUGIN([memory2],             [$plugin_memory2],           [Memory usage and pressure])
+AC_PLUGIN([osp_udp],             [$plugin_osp_udp],           [OSP udp plugin for UDP packet loss statistics])
 AC_PLUGIN([mic],                 [$with_mic],                 [Intel Many Integrated Core stats])
 AC_PLUGIN([modbus],              [$with_libmodbus],           [Modbus plugin])
 AC_PLUGIN([mqtt],                [$with_libmosquitto],        [MQTT output plugin])

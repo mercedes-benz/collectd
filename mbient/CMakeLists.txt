@@ -12,7 +12,7 @@ if (QNX_BUILD_USING_CMAKE)
         OUTPUT "collectd_out"
         COMMAND ${COLLECTD_SRC_DIR}/build-for-qnx.sh ${CMAKE_INSTALL_PREFIX} ${QNX_AP_BASE_DIR} ${CMAKE_BINARY_DIR} ${LAYER_PLATFORM_SERVICES}
         COMMENT "Compiling collectd"
-
+        DEPENDS dlt
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         VERBATIM
     )

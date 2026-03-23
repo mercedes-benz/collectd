@@ -86,7 +86,7 @@ static const data_set_t *cg2_ds_io_pressure = NULL;
 static const char *cg2_keys[] = {
     "CGroupVersion", "CpuPressure", "MemPressure",      "IOPressure",
     "MemoryUnit",    "MaxLevel",    "SortAlphabetical", "ProcessCount",
-    "ThreadCount",   "MountCache",  "SwapMemory",
+    "ThreadCount",   "MountCache",  "SwapMemory",       "PageScan",
 };
 static int cg2_keys_num = STATIC_ARRAY_SIZE(cg2_keys);
 static cg2_cgroup_version_t cg2_cgroup_version = CG2_CGROUP_VERSION_AUTO;
@@ -95,6 +95,8 @@ static bool cg2_mem_pressure_enabled = false;
 static bool cg2_io_pressure_enabled = false;
 static bool cg2_swap_enabled = false;
 static bool cg2_swap_available = false;
+static bool cg2_pgscan_enabled = false;
+static bool cgroup_pgscan_found = false;
 static const char *cg2_memory_unit_str[] = {"", "kB", "MB", "GB"};
 static gauge_t memory_swap[6];
 static cg2_memory_unit_t cg2_memory_unit = CG2_MEMORY_UNIT_AUTO;
@@ -402,6 +404,7 @@ typedef struct cg2_cpu_pressure_entry_s {
   char cgroup[256];
   double some_pressure;
   double some_pressure_avg;
+  unsigned long page_scan;
 } cg2_cpu_pressure_entry_t;
 
 typedef struct cg2_pressure_info_s {
@@ -430,6 +433,7 @@ int cg2_pressure_info_add(cg2_pressure_info_t *info, const char *cgroup,
   sstrncpy(entry->cgroup, cgroup, sizeof(entry->cgroup));
   entry->some_pressure = some_pressure;
   entry->some_pressure_avg = some_pressure_avg;
+  entry->page_scan = 0;
   ++info->entries_num;
 
   return 0;
@@ -461,6 +465,11 @@ int cg2_pressure_info_notify(cg2_pressure_info_t *info, const char *file_name) {
   ssnprintf(n.message, sizeof(n.message),
             "cgroup %s pressure (v%d) - now(avg)%%", file_name, info->version);
 
+  if ((strncmp(file_name, "memory", 6) == 0) && cgroup_pgscan_found) {
+    char suffix[] = "/pgscan";
+    strncat(n.message, suffix, sizeof(n.message) - 1 - strlen(suffix));
+  }
+
   for (int co = 0; co < info->entries_num; ++co) {
     cg2_cpu_pressure_entry_t *e = info->entries + co;
 
@@ -473,6 +482,11 @@ int cg2_pressure_info_notify(cg2_pressure_info_t *info, const char *file_name) {
 
     char cgroup[256];
     cg2_format_cgroup_for_notification(e->cgroup, cgroup, sizeof(e->cgroup));
+
+    if ((strncmp(file_name, "memory", 6) == 0) && cgroup_pgscan_found) {
+      size_t n = strlen(pressure);
+      ssnprintf(pressure + n, sizeof(pressure) - n, "/%lu", e->page_scan);
+    }
 
     if (plugin_notification_meta_add_string(&n, cgroup, pressure) != 0) {
       ERROR(LOG_KEY "adding meta data to notification failed");
@@ -1387,7 +1401,80 @@ static int cg2_handle_pressure(int dirfd, const char *dir_name,
 
   return 0;
 }
+//-----------------------------------------------------------------------------
+bool cg2_pgscan_is_part_of(cg2_cpu_pressure_entry_t *entry,
+                           const char *cgroup) {
+  const char *ecn = entry->cgroup;
+  size_t ecl = strlen(ecn);
 
+  // root includes all cgroups
+  if ((ecl == 2) && (ecn[0] == '_') && (ecn[1] == '_'))
+    return true;
+
+  if (strncmp(ecn, cgroup, ecl) != 0)
+    return false;
+
+  if (cgroup[ecl] == '\0')
+    return true;
+
+  if ((cgroup[ecl] == '_') && (cgroup[++ecl] == '_'))
+    return true;
+
+  return false;
+}
+//-----------------------------------------------------------------------------
+static int cg2_handle_pgscan(int dirfd, const char *dir_name,
+                             const char *file_name, void *user_data) {
+
+  int filefd = openat(dirfd, file_name, O_RDONLY);
+  TRACE("cg2_handle_pgscan(%d, '%s', '%s', %p): openat() --> %d", dirfd,
+        dir_name, file_name, user_data, filefd);
+  if (filefd == -1) {
+    WARNING(LOG_KEY "pgscan: could not open file '%s' in '%s'", file_name,
+            dir_name);
+    return -1;
+  }
+
+  FILE *fh = fdopen(filefd, "r");
+  TRACE("cg2_handle_pgscan(%d, '%s', '%s', %p): fdopen(%d) --> %p ", dirfd,
+        dir_name, file_name, user_data, filefd, fh);
+  if (fh == NULL) {
+    ERROR(LOG_KEY "pgscan: fdopen (\"%s\") failed: %s", file_name, STRERRNO);
+    return -1;
+  }
+
+  char buffer[1024];
+  int numfields;
+  char *fields[10];
+  static unsigned long pgscan;
+  while (fgets(buffer, sizeof(buffer), fh) != NULL) {
+    if (strncasecmp(buffer, "pgscan ", 7) == 0) {
+      numfields = strsplit(buffer, fields, STATIC_ARRAY_SIZE(fields));
+      if (numfields < 2)
+        continue;
+      pgscan = atof(fields[1]);
+      break;
+    }
+  }
+  TRACE("cg2_handle_pgscan(%d, '%s', '%s', %p): fclose(%p)", dirfd, dir_name,
+        file_name, user_data, fh);
+  if (fclose(fh)) {
+    ERROR(LOG_KEY "fclose('%s') failed: %s", file_name, STRERRNO);
+  };
+
+  char cgroup[PATH_MAX];
+  cg2_format_cgroup(dir_name, cgroup, sizeof(cgroup));
+
+  cg2_pressure_info_t *pressure_usage = (cg2_pressure_info_t *)user_data;
+  for (size_t i = 0; i < pressure_usage->entries_num; i++) {
+    cg2_cpu_pressure_entry_t *e = &pressure_usage->entries[i];
+    if (cg2_pgscan_is_part_of(e, cgroup)) {
+      e->page_scan = pgscan;
+    }
+  }
+
+  return 0;
+}
 // -----------------------------------------------------------------------------
 // set flag if swap is available
 static bool is_swap_available() {
@@ -1490,6 +1577,9 @@ static int cg2_config(const char *key, const char *value) {
     return 0;
   } else if (strcasecmp(key, "MemPressure") == 0) {
     cg2_mem_pressure_enabled = IS_TRUE(value) ? true : false;
+    return 0;
+  } else if (strcasecmp(key, "PageScan") == 0) {
+    cg2_pgscan_enabled = IS_TRUE(value) ? true : false;
     return 0;
   } else if (strcasecmp(key, "IOPressure") == 0) {
     cg2_io_pressure_enabled = IS_TRUE(value) ? true : false;
@@ -1615,6 +1705,7 @@ static int cg2_read(void) {
   bool cgroup_io_pressure_found = false;
   bool cgroup_swap_found = false;
 
+  cgroup_pgscan_found = false;
   if (mnt_list == NULL) {
     if (cu_mount_getlist(&mnt_list) == NULL) {
       ERROR(LOG_KEY "cu_mount_getlist failed.");
@@ -1700,6 +1791,17 @@ static int cg2_read(void) {
           cgroup_mem_pressure_found = true;
         } else {
           DEBUG(LOG_KEY "v2 memory pressure statistic disabled");
+        }
+      }
+
+      if (cg2_mem_pressure_enabled && cg2_pgscan_enabled &&
+          !cgroup_pgscan_found) {
+        if (cg2_handle_files(mnt_ptr->dir, SLICE_SUFFIX, "memory.stat",
+                             cg2_handle_pgscan, &memory_pressure,
+                             CG2_FIRST_LEVEL) > 0) {
+          cgroup_pgscan_found = true;
+        } else {
+          DEBUG(LOG_KEY "v2 memory pressure pgscan statistic disabled");
         }
       }
 
@@ -1800,6 +1902,7 @@ static int cg2_read(void) {
       WARNING(LOG_KEY "Unable to find memory pressure information.");
     }
   }
+
   if (cg2_io_pressure_enabled) {
     if (cgroup_io_pressure_found) {
       cg2_pressure_info_notify(&io_pressure, "io");
