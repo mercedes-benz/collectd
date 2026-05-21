@@ -3,14 +3,32 @@
 This changelog contains all internal changes to collectd.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [Unreleased]
+## [5.12.1-37] - 2026-05-21
+
+### Added
+- OS platform UFS plugin.
+  - prints UFS statistics for Micron and Samsung
+
+- OS platform partition manager plugin.
+  - prints partition manager statistics
+
+- OS platform mount plugin.
+  - prints mount partitions statistics
+
+### Changed
+- cgroup2 plugin:
+  - single-pass directory traversal with multi-handler to reduce the number of
+    cgroup filesystem traversal
+
+- replace fgetc loop with fgets to avoid spin on read error in
+    cg2_handle_cgroup_procs
+
+- avoid unnecessary cond_signal in plugin_write_enqueue
 
 ## [5.12.1-36] - 2026-03-09
 
-### Added
-
-- osp_udp plugin:
-  - collect UDP packet loss statistics
+- OS platform UDP plugin.
+  - prints UDP packet loss statistics
 - memory2 plugin:
   - pagescan direct, pagescan direct throttle
   - unit tests for parsing functions
