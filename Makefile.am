@@ -1554,6 +1554,61 @@ check_PROGRAMS += test_plugin_osp_udp
 TESTS += test_plugin_osp_udp
 endif
 
+if BUILD_PLUGIN_OSP_MOUNT
+pkglib_LTLIBRARIES += osp_mount.la
+osp_mount_la_SOURCES = mbient/plugins/osp_mount.c
+
+osp_mount_la_CFLAGS = $(AM_CFLAGS)
+osp_mount_la_LDFLAGS = $(PLUGIN_LDFLAGS)
+
+test_plugin_osp_mount_SOURCES = \
+  mbient/plugins/osp_mount_test.c \
+  src/daemon/configfile.c \
+  src/daemon/types_list.c
+test_plugin_osp_mount_CFLAGS = $(AM_FLAGS)
+test_plugin_osp_mount_CFLAGS = $(PLUGIN_LDFLAGS)
+test_plugin_osp_mount_CFLAGS = liboconfig.la libplugin_mock.la
+check_PROGRAMS += test_plugin_osp_mount
+TESTS += test_plugin_osp_mount
+endif
+
+
+if BUILD_PLUGIN_OSP_PM
+pkglib_LTLIBRARIES += osp_pm.la
+osp_pm_la_SOURCES = mbient/plugins/osp_partition_manger.c
+
+osp_pm_la_CFLAGS = $(AM_CFLAGS)
+osp_pm_la_LDFLAGS = $(PLUGIN_LDFLAGS)
+
+test_plugin_osp_pm_SOURCES = \
+  mbient/plugins/osp_partition_manger_test.c \
+  src/daemon/configfile.c \
+  src/daemon/types_list.c
+test_plugin_osp_pm_CFLAGS = $(AM_FLAGS)
+test_plugin_osp_pm_CFLAGS = $(PLUGIN_LDFLAGS)
+test_plugin_osp_pm_CFLAGS = liboconfig.la libplugin_mock.la
+check_PROGRAMS += test_plugin_osp_pm
+TESTS += test_plugin_osp_pm
+endif
+
+if BUILD_PLUGIN_OSP_UFS
+pkglib_LTLIBRARIES += osp_ufs.la
+osp_ufs_la_SOURCES = mbient/plugins/osp_ufs_statistic.c
+
+osp_ufs_la_CFLAGS = $(AM_CFLAGS)
+osp_ufs_la_LDFLAGS = $(PLUGIN_LDFLAGS)
+
+test_plugin_osp_ufs_SOURCES = \
+  mbient/plugins/osp_ufs_statistic_test.c \
+  src/daemon/configfile.c \
+  src/daemon/types_list.c
+test_plugin_osp_ufs_CFLAGS = $(AM_FLAGS)
+test_plugin_osp_ufs_CFLAGS = $(PLUGIN_LDFLAGS)
+test_plugin_osp_ufs_CFLAGS = liboconfig.la libplugin_mock.la
+check_PROGRAMS += test_plugin_osp_ufs
+TESTS += test_plugin_osp_ufs
+endif
+
 
 if BUILD_PLUGIN_VRAM
 pkglib_LTLIBRARIES += vram.la

@@ -186,20 +186,117 @@ DEF_TEST(handle_file) {
   CHECK_ZERO(create_empty_file(TEST_DIR "g4.mount/" TEST_FILE));
 
   int count = 0;
-  cg2_handle_files(TEST_DIR, NULL, TEST_FILE, count_files, &count, 0);
+  cg2_file_handler_t h = {.file_name = TEST_FILE, .dir_pattern = NULL,
+                           .callback = count_files, .user_data = &count};
+  cg2_handle_files_multi(TEST_DIR, &h, 1, 0);
   EXPECT_EQ_INT(count, 3);
 
   count = 0;
-  cg2_handle_files(TEST_DIR, SLICE_SUFFIX, TEST_FILE, count_files, &count, 0);
+  h.dir_pattern = SLICE_SUFFIX;
+  cg2_handle_files_multi(TEST_DIR, &h, 1, 0);
   EXPECT_EQ_INT(count, 2);
 
   count = 0;
-  cg2_handle_files(TEST_DIR, NULL, "unknown.file", count_files, &count, 0);
+  h.file_name = "unknown.file";
+  h.dir_pattern = NULL;
+  cg2_handle_files_multi(TEST_DIR, &h, 1, 0);
   EXPECT_EQ_INT(count, 0);
 
   count = 0;
-  cg2_handle_files(TEST_DIR, ".unknown", TEST_FILE, count_files, &count, 0);
+  h.file_name = TEST_FILE;
+  h.dir_pattern = ".unknown";
+  cg2_handle_files_multi(TEST_DIR, &h, 1, 0);
   EXPECT_EQ_INT(count, 0);
+
+  CHECK_ZERO(remove_directory(TEST_DIR));
+
+  return 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Verify that cg2_handle_files_multi() visits each handler's file exactly
+ * the right number of times in a single traversal, respecting per-handler
+ * dir_pattern filters. */
+DEF_TEST(handle_file_multi) {
+  cg2_config("MaxLevel", "1");
+
+  /* Directory layout:
+   *   TEST_DIR/
+   *     g1.slice/   main.service   extra.file
+   *     g2.slice/   main.service
+   *     g3.slice/
+   *       g31.slice/ main.service
+   *       g32.slice/ main.service
+   *     g4.mount/   main.service   extra.file
+   */
+  CHECK_ZERO(create_dir(TEST_DIR));
+  CHECK_ZERO(create_dir(TEST_DIR "g1.slice"));
+  CHECK_ZERO(create_dir(TEST_DIR "g2.slice"));
+  CHECK_ZERO(create_dir(TEST_DIR "g3.slice"));
+  CHECK_ZERO(create_dir(TEST_DIR "g3.slice/g31.slice"));
+  CHECK_ZERO(create_dir(TEST_DIR "g3.slice/g32.slice"));
+  CHECK_ZERO(create_dir(TEST_DIR "g4.mount"));
+  CHECK_ZERO(create_empty_file(TEST_DIR "g1.slice/" TEST_FILE));
+  CHECK_ZERO(create_empty_file(TEST_DIR "g2.slice/" TEST_FILE));
+  CHECK_ZERO(create_empty_file(TEST_DIR "g3.slice/g31.slice/" TEST_FILE));
+  CHECK_ZERO(create_empty_file(TEST_DIR "g3.slice/g32.slice/" TEST_FILE));
+  CHECK_ZERO(create_empty_file(TEST_DIR "g4.mount/" TEST_FILE));
+  CHECK_ZERO(create_empty_file(TEST_DIR "g1.slice/extra.file"));
+  CHECK_ZERO(create_empty_file(TEST_DIR "g4.mount/extra.file"));
+
+  int count_main = 0;  /* counts TEST_FILE hits with SLICE_SUFFIX filter */
+  int count_extra = 0; /* counts extra.file hits with NULL filter        */
+
+  cg2_file_handler_t handlers[] = {
+      {
+          .file_name = TEST_FILE,
+          .dir_pattern = SLICE_SUFFIX,
+          .callback = count_files,
+          .user_data = &count_main,
+      },
+      {
+          .file_name = "extra.file",
+          .dir_pattern = NULL, /* all directories */
+          .callback = count_files,
+          .user_data = &count_extra,
+      },
+  };
+
+  int ret = cg2_handle_files_multi(TEST_DIR, handlers,
+                                   STATIC_ARRAY_SIZE(handlers), 0);
+  OK(ret > 0);
+
+  /* SLICE_SUFFIX handler: g1.slice and g2.slice => 2
+   * (g3.slice itself has no TEST_FILE;
+   *  g4.mount is entered via the NULL-pattern handler but SLICE_SUFFIX
+   *  dir_pattern check prevents reading TEST_FILE there;
+   *  g31.slice, g32.slice not reached: MaxLevel 1 stops descent) */
+  EXPECT_EQ_INT(count_main, 2);
+
+  /* NULL-pattern handler: g1.slice and g4.mount both have extra.file => 2 */
+  EXPECT_EQ_INT(count_extra, 2);
+
+  /* A single-handler call with an unknown file must return 0 matches */
+  int count_none = 0;
+  cg2_file_handler_t h_none = {
+      .file_name = "no.such.file",
+      .dir_pattern = NULL,
+      .callback = count_files,
+      .user_data = &count_none,
+  };
+  ret = cg2_handle_files_multi(TEST_DIR, &h_none, 1, 0);
+  EXPECT_EQ_INT(count_none, 0);
+
+  /* A single-handler call with a non-matching dir_pattern must return 0 */
+  int count_bad_pat = 0;
+  cg2_file_handler_t h_bad_pat = {
+      .file_name = TEST_FILE,
+      .dir_pattern = ".unknown",
+      .callback = count_files,
+      .user_data = &count_bad_pat,
+  };
+  ret = cg2_handle_files_multi(TEST_DIR, &h_bad_pat, 1, 0);
+  EXPECT_EQ_INT(count_bad_pat, 0);
 
   CHECK_ZERO(remove_directory(TEST_DIR));
 
@@ -234,9 +331,15 @@ DEF_TEST(plugin_config) {
  */
 DEF_TEST(read_sys_fs_cgroup) {
   const char *base_dir = "/sys/fs/cgroup";
-  if (cg2_handle_files(base_dir, ".slice", "cpu.pressure", cg2_handle_files_log,
-                       NULL, 0)) {
-  }
+  cg2_file_handler_t handlers[] = {
+      {
+          .file_name = "cpu.pressure",
+          .dir_pattern = ".slice",
+          .callback = cg2_handle_files_log,
+          .user_data = NULL,
+      },
+  };
+  cg2_handle_files_multi(base_dir, handlers, STATIC_ARRAY_SIZE(handlers), 0);
 
   return 0;
 }
@@ -406,6 +509,7 @@ DEF_TEST(cg2_format_cgroup) {
 
 int main(void) {
   RUN_TEST(handle_file);
+  RUN_TEST(handle_file_multi);
   RUN_TEST(load_config);
   RUN_TEST(plugin_config);
   RUN_TEST(read_sys_fs_cgroup);

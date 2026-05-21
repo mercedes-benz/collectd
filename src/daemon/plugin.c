@@ -794,6 +794,7 @@ static int plugin_write_enqueue(value_list_t const *vl) /* {{{ */
 
   pthread_mutex_lock(&write_lock);
 
+  bool was_empty = (write_queue_head == NULL);
   if (write_queue_tail == NULL) {
     write_queue_head = q;
     write_queue_tail = q;
@@ -804,7 +805,12 @@ static int plugin_write_enqueue(value_list_t const *vl) /* {{{ */
     write_queue_length += 1;
   }
 
-  pthread_cond_signal(&write_cond);
+  /* Signal only when the queue was empty: the write thread is waiting
+   * in pthread_cond_wait only in that case. If the queue was non-empty,
+   * the write thread is already awake and will pick up the new item
+   * without an extra wakeup, avoiding unnecessary futex_wake syscalls. */
+  if (was_empty)
+    pthread_cond_signal(&write_cond);
   pthread_mutex_unlock(&write_lock);
 
   return 0;

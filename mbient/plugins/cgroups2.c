@@ -38,6 +38,7 @@
 #include <string.h>
 #include <sys/sysinfo.h>
 #include <unistd.h>
+#include <libgen.h>
 
 #include "plugin.h"
 #include "utils/common/common.h"
@@ -792,11 +793,34 @@ int cg2_ends_with(const char *input, const char *expected_suffix) {
 typedef int (*cg2_file_callback)(int dirfd, const char *dir_name,
                                  const char *file_name, void *user_data);
 
+/* Handler entry: associates a file name and its dir_pattern filter with a
+ * callback.  dir_pattern == NULL means "match every directory" (same
+ * semantics as the old single-file API). */
+typedef struct {
+  const char *file_name;      /* file to look for in each cgroup dir  */
+  const char *dir_pattern;    /* suffix filter for sub-dirs, or NULL  */
+  cg2_file_callback callback; /* called when the file is found        */
+  void *user_data;            /* opaque pointer forwarded to callback */
+} cg2_file_handler_t;
+
 //------------------------------------------------------------------------------
-static int cg2_handle_files_recurse(DIR *parent, const char *dir_pattern,
-                                    const char *dir_name, const char *file_name,
-                                    cg2_file_callback callback, void *user_data,
-                                    int level) {
+/* Determine whether a directory should be descended into.
+ * A directory is entered when at least one handler has a dir_pattern that
+ * matches it (or NULL, which matches everything). */
+static bool cg2_any_handler_matches_dir(const char *dname,
+                                        const cg2_file_handler_t *handlers,
+                                        int handler_count) {
+  for (int i = 0; i < handler_count; i++) {
+    if (cg2_ends_with(dname, handlers[i].dir_pattern) == 0)
+      return true;
+  }
+  return false;
+}
+
+//------------------------------------------------------------------------------
+static int cg2_handle_files_recurse_multi(DIR *parent, const char *dir_name,
+                                          const cg2_file_handler_t *handlers,
+                                          int handler_count, int level) {
   struct dirent *ent;
   struct stat sb;
   int success = 0;
@@ -806,9 +830,9 @@ static int cg2_handle_files_recurse(DIR *parent, const char *dir_pattern,
   int next_level = (level >= 0) ? ++level : level;
   char subdirname[PATH_MAX];
 
-  DEBUG(LOG_KEY
-        "cg2_handle_files_recurse(dir='%s', pattern='%s', file='%s', level=%d)",
-        dir_name, dir_pattern, file_name, level);
+  DEBUG(LOG_KEY "cg2_handle_files_recurse_multi(dir='%s', handlers=%d, "
+                "level=%d)",
+        dir_name, handler_count, level);
 
   if (!parent) {
     return 0;
@@ -816,7 +840,7 @@ static int cg2_handle_files_recurse(DIR *parent, const char *dir_pattern,
 
   int parent_fd = dirfd(parent);
   if (parent_fd < 0) {
-    WARNING(LOG_KEY "dirfd()in handle_files_recursive(%s) "
+    WARNING(LOG_KEY "dirfd()in handle_files_recurse_multi(%s) "
                     "failed with '%s'",
             dir_name, STRERRNO);
     return -1;
@@ -841,49 +865,47 @@ static int cg2_handle_files_recurse(DIR *parent, const char *dir_pattern,
           continue;
       }
 
-      // allow only directories with given suffix for recursion
-      if (cg2_ends_with(dname, dir_pattern) != 0)
+      // enter the directory only when at least one handler cares about it
+      if (!cg2_any_handler_matches_dir(dname, handlers, handler_count))
         continue;
 
       int fd = openat(parent_fd, dname, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
-      TRACE("cg2_handle_files_recurse('%s', '%s', '%s', %d): openat(%d, '%s) "
+      TRACE("cg2_handle_files_recurse_multi('%s', %d): openat(%d, '%s') "
             "--> %d",
-            dir_name, dir_pattern, file_name, level, parent_fd, dname, fd);
+            dir_name, level, parent_fd, dname, fd);
 
       if (fd != -1) { /* Directory */
         DIR *child = fdopendir(fd);
-        TRACE("cg2_handle_files_recurse('%s', '%s', '%s', %d): fdopendir(%d) "
+        TRACE("cg2_handle_files_recurse_multi('%s', %d): fdopendir(%d) "
               "--> %p",
-              dir_name, dir_pattern, file_name, level, fd, child);
+              dir_name, level, fd, child);
         if (child != NULL) {
           if (dir_name == NULL) {
-            status =
-                cg2_handle_files_recurse(child, dir_pattern, ".", file_name,
-                                         callback, user_data, next_level);
+            status = cg2_handle_files_recurse_multi(child, ".", handlers,
+                                                    handler_count, next_level);
           } else {
             snprintf(subdirname, sizeof(subdirname), "%s%s/", dir_name,
                      ent->d_name);
-            status = cg2_handle_files_recurse(child, dir_pattern, subdirname,
-                                              file_name, callback, user_data,
-                                              next_level);
+            status = cg2_handle_files_recurse_multi(
+                child, subdirname, handlers, handler_count, next_level);
           }
 
-          TRACE("cg2_handle_files_recurse('%s', '%s', '%s', %d): closedir(%p) ",
-                dir_name, dir_pattern, file_name, level, child);
+          TRACE("cg2_handle_files_recurse_multi('%s', %d): closedir(%p)",
+                dir_name, level, child);
           if (closedir(child)) {
             ERROR(LOG_KEY "closedir(%d) failed: %s", fd, STRERRNO);
           };
         } else {
-          WARNING(LOG_KEY "fdopendir(%s) in handle_files_recursive(%s) "
+          WARNING(LOG_KEY "fdopendir(%s) in handle_files_recurse_multi(%s) "
                           "failed with '%s'",
                   dname, dir_name, STRERRNO);
         }
-        TRACE("cg2_handle_files_recurse('%s', '%s', '%s', %d): close(%d) ",
-              dir_name, dir_pattern, file_name, level, fd);
+        TRACE("cg2_handle_files_recurse_multi('%s', %d): close(%d) ",
+              dir_name, level, fd);
       } else {
-        WARNING(LOG_KEY "handle files recursive(), openat failed with '%s', "
+        WARNING(LOG_KEY "handle_files_recurse_multi(), openat failed with '%s', "
                         "dir=%s, file=%s, file descriptor=%d",
-                STRERRNO, dir_name, file_name, parent_fd);
+                STRERRNO, dir_name, "(multi)", parent_fd);
       }
       if (status >= 0)
         success += status;
@@ -892,18 +914,48 @@ static int cg2_handle_files_recurse(DIR *parent, const char *dir_pattern,
     }
   }
 
-  // try handle the requested file
-  if (fstatat(parent_fd, file_name, &sb, AT_SYMLINK_NOFOLLOW) == 0) {
-    if ((sb.st_mode & S_IFMT) == S_IFREG) {
-      status = (*callback)(parent_fd, dir_name, file_name, user_data);
-      if (status >= 0) {
-        success++;
-      } else {
-        WARNING(LOG_KEY "handling '%s' in '%s' failed", file_name, dir_name);
-        failure++;
-      }
+  // for each handler, try to read its file in the current directory.
+  // A handler is only applied if the current directory name matches its
+  // dir_pattern (NULL means match everything).  The root call passes
+  // dir_name="" which we treat as always matching so that files placed
+  // directly under the mount-point root are still collected.
+  for (int i = 0; i < handler_count; i++) {
+    const cg2_file_handler_t *h = &handlers[i];
+
+    /* Determine the bare directory name (last path component) so we can
+     * check it against the handler's dir_pattern. */
+    if (h->dir_pattern != NULL && dir_name != NULL && *dir_name != '\0') {
+      /* dir_name is built as "parent/child/"; find the last component. */
+      char temp_path[PATH_MAX];
+
+      strncpy(temp_path, dir_name, sizeof(temp_path) - 1);
+      temp_path[sizeof(temp_path) - 1] = '\0';
+
+      char *base_ptr = basename(temp_path);
+      char bare[NAME_MAX + 1];
+
+      strncpy(bare, base_ptr, sizeof(bare) - 1);
+      bare[sizeof(bare) - 1] = '\0';
+
+      if (cg2_ends_with(bare, h->dir_pattern) != 0)
+        continue; /* this handler does not apply to the current directory */
+    }
+    /* else: dir_pattern==NULL (match all) or root dir (dir_name=="") */
+
+    if (fstatat(parent_fd, h->file_name, &sb, AT_SYMLINK_NOFOLLOW) != 0)
+      continue;
+
+    if ((sb.st_mode & S_IFMT) != S_IFREG) {
+      WARNING(LOG_KEY "%s/%s is not a regular file", dir_name, h->file_name);
+      failure++;
+      continue;
+    }
+
+    status = (*h->callback)(parent_fd, dir_name, h->file_name, h->user_data);
+    if (status >= 0) {
+      success++;
     } else {
-      WARNING(LOG_KEY "%s/%s is not a regular file", dir_name, file_name);
+      WARNING(LOG_KEY "handling '%s' in '%s' failed", h->file_name, dir_name);
       failure++;
     }
   }
@@ -915,19 +967,21 @@ static int cg2_handle_files_recurse(DIR *parent, const char *dir_pattern,
 }
 
 //------------------------------------------------------------------------------
-static int cg2_handle_files(const char *dir_name, const char *dir_pattern,
-                            const char *file_name, cg2_file_callback callback,
-                            void *user_data, int level) {
+static int cg2_handle_files_multi(const char *dir_name,
+                                  const cg2_file_handler_t *handlers,
+                                  int handler_count, int level) {
   DIR *dir = opendir(dir_name);
   if (dir == NULL) {
-    ERROR(LOG_KEY "handle files(), cannot open '%s': %s", dir_name, STRERRNO);
+    ERROR(LOG_KEY "handle_files_multi(), cannot open '%s': %s", dir_name,
+          STRERRNO);
     return -1;
   }
 
-  DEBUG(LOG_KEY "cg2_handle_files(dir='%s', pattern='%s', file='%s', level=%d)",
-        dir_name, dir_pattern, file_name, level);
-  int status = cg2_handle_files_recurse(dir, dir_pattern, "", file_name,
-                                        callback, user_data, level);
+  DEBUG(LOG_KEY "cg2_handle_files_multi(dir='%s', handlers=%d, level=%d)",
+        dir_name, handler_count, level);
+
+  int status = cg2_handle_files_recurse_multi(dir, "", handlers, handler_count,
+                                              level);
   if (closedir(dir)) {
     ERROR(LOG_KEY "closedir(\"%s\") failed: %s", dir_name, STRERRNO);
   }
@@ -1133,10 +1187,18 @@ static int cg2_handle_cgroup_procs(int dirfd, const char *dir_name,
   }
 
   long proc_count = 0;
-  while (!feof(fh)) {
-    if (fgetc(fh) == '\n') {
+  char buf[32];
+  while (fgets(buf, sizeof(buf), fh) != NULL) {
+    if (buf[0] >= '0' && buf[0] <= '9') {
       proc_count++;
     }
+  }
+
+  if (ferror(fh)) {
+    WARNING(LOG_KEY "error reading '%s' in '%s': %s", file_name, dir_name,
+            STRERRNO);
+    fclose(fh);
+    return -1;
   }
 
   TRACE("cg2_handle_cgroup_procs(%d, '%s', '%s', %p): fclose(%p)", dirfd,
@@ -1741,90 +1803,177 @@ static int cg2_read(void) {
 
       DEBUG(LOG_KEY "v2 mount point: '%s'", mnt_ptr->dir);
 
-      if (!cgroup_cpu_found) {
-        if (cg2_handle_files(mnt_ptr->dir, SLICE_SUFFIX, "cpu.stat",
-                             cg2_handle_v2_cpu_stat, &cpu_usage,
-                             CG2_FIRST_LEVEL) > 0) {
-          cpu_usage.version = 2;
-          cgroup_cpu_found = true;
-        } else {
-          DEBUG(LOG_KEY "v2 cpu statistic disabled");
-        }
+      /* Build a handler array for a single traversal of this mount point.
+       * Handlers are added conditionally based on enabled features and
+       * whether data has already been found on a previous mount point. */
+      const int CG2_HANDLER_MAX = 9;
+      cg2_file_handler_t handlers[CG2_HANDLER_MAX];
+      int handler_count = 0;
+
+      /* cpu.stat - always collected */
+      if (!cgroup_cpu_found && handler_count < CG2_HANDLER_MAX) {
+        handlers[handler_count++] = (cg2_file_handler_t){
+            .file_name = "cpu.stat",
+            .dir_pattern = SLICE_SUFFIX,
+            .callback = cg2_handle_v2_cpu_stat,
+            .user_data = &cpu_usage,
+        };
       }
 
-      if (cg2_proc_count) {
-        cg2_handle_files(mnt_ptr->dir, NULL, "cgroup.procs",
-                         cg2_handle_cgroup_procs, &cpu_usage, -1);
+      /* cgroup.procs - all directories, unlimited depth */
+      if (cg2_proc_count && handler_count < CG2_HANDLER_MAX) {
+        handlers[handler_count++] = (cg2_file_handler_t){
+            .file_name = "cgroup.procs",
+            .dir_pattern = NULL,
+            .callback = cg2_handle_cgroup_procs,
+            .user_data = &cpu_usage,
+        };
       }
 
-      if (cg2_thread_count) {
-        cg2_handle_files(mnt_ptr->dir, NULL, "cgroup.threads",
-                         cg2_handle_cgroup_threads, &cpu_usage, -1);
+      /* cgroup.threads - all directories, unlimited depth */
+      if (cg2_thread_count && handler_count < CG2_HANDLER_MAX) {
+        handlers[handler_count++] = (cg2_file_handler_t){
+            .file_name = "cgroup.threads",
+            .dir_pattern = NULL,
+            .callback = cg2_handle_cgroup_threads,
+            .user_data = &cpu_usage,
+        };
       }
 
-      if (!cgroup_mem_found) {
-        if (cg2_handle_files(mnt_ptr->dir, SLICE_SUFFIX, "memory.current",
-                             cg2_handle_v2_mem_stat, &mem_usage,
-                             CG2_FIRST_LEVEL) > 0) {
-          mem_usage.version = 2;
-          cgroup_mem_found = true;
-        } else {
-          DEBUG(LOG_KEY "v2 memory statistic disabled");
-        }
+      /* memory.current */
+      if (!cgroup_mem_found && handler_count < CG2_HANDLER_MAX) {
+        handlers[handler_count++] = (cg2_file_handler_t){
+            .file_name = "memory.current",
+            .dir_pattern = SLICE_SUFFIX,
+            .callback = cg2_handle_v2_mem_stat,
+            .user_data = &mem_usage,
+        };
       }
 
-      if (cg2_cpu_pressure_enabled && !cgroup_cpu_pressure_found) {
-        if (cg2_handle_files(mnt_ptr->dir, SLICE_SUFFIX, "cpu.pressure",
-                             cg2_handle_pressure, &cpu_pressure,
-                             CG2_FIRST_LEVEL) > 0) {
-          cpu_pressure.version = 2;
-          cgroup_cpu_pressure_found = true;
-        } else {
-          DEBUG(LOG_KEY "v2 cpu pressure statistic disabled");
-        }
+      /* cpu.pressure */
+      if (cg2_cpu_pressure_enabled && !cgroup_cpu_pressure_found &&
+          handler_count < CG2_HANDLER_MAX) {
+        handlers[handler_count++] = (cg2_file_handler_t){
+            .file_name = "cpu.pressure",
+            .dir_pattern = SLICE_SUFFIX,
+            .callback = cg2_handle_pressure,
+            .user_data = &cpu_pressure,
+        };
       }
-      if (cg2_mem_pressure_enabled && !cgroup_mem_pressure_found) {
-        if (cg2_handle_files(mnt_ptr->dir, SLICE_SUFFIX, "memory.pressure",
-                             cg2_handle_pressure, &memory_pressure,
-                             CG2_FIRST_LEVEL) > 0) {
-          memory_pressure.version = 2;
-          cgroup_mem_pressure_found = true;
-        } else {
-          DEBUG(LOG_KEY "v2 memory pressure statistic disabled");
-        }
+
+      /* memory.pressure */
+      if (cg2_mem_pressure_enabled && !cgroup_mem_pressure_found &&
+          handler_count < CG2_HANDLER_MAX) {
+        handlers[handler_count++] = (cg2_file_handler_t){
+            .file_name = "memory.pressure",
+            .dir_pattern = SLICE_SUFFIX,
+            .callback = cg2_handle_pressure,
+            .user_data = &memory_pressure,
+        };
+      }
+
+      /* memory.stat (pgscan) */
+      if (cg2_mem_pressure_enabled && cg2_pgscan_enabled &&
+          !cgroup_pgscan_found && handler_count < CG2_HANDLER_MAX) {
+        handlers[handler_count++] = (cg2_file_handler_t){
+            .file_name = "memory.stat",
+            .dir_pattern = SLICE_SUFFIX,
+            .callback = cg2_handle_pgscan,
+            .user_data = &memory_pressure,
+        };
+      }
+
+      /* io.pressure */
+      if (cg2_io_pressure_enabled && !cgroup_io_pressure_found &&
+          handler_count < CG2_HANDLER_MAX) {
+        handlers[handler_count++] = (cg2_file_handler_t){
+            .file_name = "io.pressure",
+            .dir_pattern = SLICE_SUFFIX,
+            .callback = cg2_handle_pressure,
+            .user_data = &io_pressure,
+        };
+      }
+
+      /* memory.swap.current */
+      if (cg2_swap_available && handler_count < CG2_HANDLER_MAX) {
+        handlers[handler_count++] = (cg2_file_handler_t){
+            .file_name = "memory.swap.current",
+            .dir_pattern = SLICE_SUFFIX,
+            .callback = cg2_handle_v2_swap_stat,
+            .user_data = &swap_usage,
+        };
+      }
+
+      if (handler_count == 0)
+        continue;
+
+      /* Single traversal for all handlers on this mount point */
+      if (!cg2_handle_files_multi(mnt_ptr->dir, handlers, handler_count,
+                             CG2_FIRST_LEVEL)) {
+        ERROR(LOG_KEY "cg2_handle_files_multi failed");
+        return -1;
+      }
+
+      /* Update found-flags based on what was collected */
+      if (!cgroup_cpu_found && cpu_usage.entries_num > 0) {
+        cpu_usage.version = 2;
+        cgroup_cpu_found = true;
+        DEBUG(LOG_KEY "v2 cpu statistic found");
+      } else if (!cgroup_cpu_found) {
+        DEBUG(LOG_KEY "v2 cpu statistic disabled");
+      }
+
+      if (!cgroup_mem_found && mem_usage.entries_num > 0) {
+        mem_usage.version = 2;
+        cgroup_mem_found = true;
+        DEBUG(LOG_KEY "v2 memory statistic found");
+      } else if (!cgroup_mem_found) {
+        DEBUG(LOG_KEY "v2 memory statistic disabled");
+      }
+
+      if (cg2_cpu_pressure_enabled && !cgroup_cpu_pressure_found &&
+          cpu_pressure.entries_num > 0) {
+        cpu_pressure.version = 2;
+        cgroup_cpu_pressure_found = true;
+        DEBUG(LOG_KEY "v2 cpu pressure statistic found");
+      } else if (cg2_cpu_pressure_enabled && !cgroup_cpu_pressure_found) {
+        DEBUG(LOG_KEY "v2 cpu pressure statistic disabled");
+      }
+
+      if (cg2_mem_pressure_enabled && !cgroup_mem_pressure_found &&
+          memory_pressure.entries_num > 0) {
+        memory_pressure.version = 2;
+        cgroup_mem_pressure_found = true;
+        DEBUG(LOG_KEY "v2 memory pressure statistic found");
+      } else if (cg2_mem_pressure_enabled && !cgroup_mem_pressure_found) {
+        DEBUG(LOG_KEY "v2 memory pressure statistic disabled");
       }
 
       if (cg2_mem_pressure_enabled && cg2_pgscan_enabled &&
-          !cgroup_pgscan_found) {
-        if (cg2_handle_files(mnt_ptr->dir, SLICE_SUFFIX, "memory.stat",
-                             cg2_handle_pgscan, &memory_pressure,
-                             CG2_FIRST_LEVEL) > 0) {
-          cgroup_pgscan_found = true;
-        } else {
-          DEBUG(LOG_KEY "v2 memory pressure pgscan statistic disabled");
-        }
+          !cgroup_pgscan_found && memory_pressure.entries_num > 0) {
+        cgroup_pgscan_found = true;
+        DEBUG(LOG_KEY "v2 memory pgscan statistic found");
+      } else if (cg2_mem_pressure_enabled && cg2_pgscan_enabled &&
+                 !cgroup_pgscan_found) {
+        DEBUG(LOG_KEY "v2 memory pressure pgscan statistic disabled");
       }
 
-      if (cg2_io_pressure_enabled && !cgroup_io_pressure_found) {
-        if (cg2_handle_files(mnt_ptr->dir, SLICE_SUFFIX, "io.pressure",
-                             cg2_handle_pressure, &io_pressure,
-                             CG2_FIRST_LEVEL) > 0) {
-          io_pressure.version = 2;
-          cgroup_io_pressure_found = true;
-        } else {
-          DEBUG(LOG_KEY "v2 io pressure statistic disabled");
-        }
+      if (cg2_io_pressure_enabled && !cgroup_io_pressure_found &&
+          io_pressure.entries_num > 0) {
+        io_pressure.version = 2;
+        cgroup_io_pressure_found = true;
+        DEBUG(LOG_KEY "v2 io pressure statistic found");
+      } else if (cg2_io_pressure_enabled && !cgroup_io_pressure_found) {
+        DEBUG(LOG_KEY "v2 io pressure statistic disabled");
       }
 
-      if (cg2_swap_available) {
-        if (cg2_handle_files(mnt_ptr->dir, SLICE_SUFFIX, "memory.swap.current",
-                             cg2_handle_v2_swap_stat, &swap_usage,
-                             CG2_FIRST_LEVEL) > 0) {
-          swap_usage.version = 2;
-          cgroup_swap_found = true;
-        } else {
-          DEBUG(LOG_KEY "v2 swap usage statistic disabled");
-        }
+      if (cg2_swap_available && !cgroup_swap_found &&
+          swap_usage.entries_num > 0) {
+        swap_usage.version = 2;
+        cgroup_swap_found = true;
+        DEBUG(LOG_KEY "v2 swap statistic found");
+      } else if (cg2_swap_available && !cgroup_swap_found) {
+        DEBUG(LOG_KEY "v2 swap usage statistic disabled");
       }
     }
   }
@@ -1839,31 +1988,54 @@ static int cg2_read(void) {
 
       DEBUG(LOG_KEY "v1 mount point: '%s'", mnt_ptr->dir);
 
-      if (cu_mount_checkoption(mnt_ptr->options, "cpuacct", 1)) {
-        // avoid reading same data multiple times
-        if (!cgroup_cpu_found) {
-          if (cg2_handle_files(mnt_ptr->dir, SLICE_SUFFIX, "cpuacct.stat",
-                               cg2_handle_v1_cpu_stat, &cpu_usage,
-                               CG2_FIRST_LEVEL) > 0) {
-            cpu_usage.version = 1;
-            cgroup_cpu_found = true;
-          } else {
-            DEBUG(LOG_KEY "v1 cpu statistic disabled");
-          }
-        }
+      const int CG2_HANDLER_MAX = 2;
+      cg2_file_handler_t handlers[CG2_HANDLER_MAX];
+      int handler_count = 0;
+
+      if (cu_mount_checkoption(mnt_ptr->options, "cpuacct", 1) &&
+          !cgroup_cpu_found && handler_count < CG2_HANDLER_MAX) {
+        handlers[handler_count++] = (cg2_file_handler_t){
+            .file_name = "cpuacct.stat",
+            .dir_pattern = SLICE_SUFFIX,
+            .callback = cg2_handle_v1_cpu_stat,
+            .user_data = &cpu_usage,
+        };
       }
 
-      if (cu_mount_checkoption(mnt_ptr->options, "memory", 1)) {
-        if (!cgroup_mem_found) {
-          if (cg2_handle_files(mnt_ptr->dir, SLICE_SUFFIX,
-                               "memory.usage_in_bytes", cg2_handle_v1_mem_stat,
-                               &mem_usage, CG2_FIRST_LEVEL) > 0) {
-            mem_usage.version = 1;
-            cgroup_mem_found = true;
-          } else {
-            DEBUG(LOG_KEY "v1 memory statistic disabled");
-          }
-        }
+      if (cu_mount_checkoption(mnt_ptr->options, "memory", 1) &&
+          !cgroup_mem_found && handler_count < CG2_HANDLER_MAX) {
+        handlers[handler_count++] = (cg2_file_handler_t){
+            .file_name = "memory.usage_in_bytes",
+            .dir_pattern = SLICE_SUFFIX,
+            .callback = cg2_handle_v1_mem_stat,
+            .user_data = &mem_usage,
+        };
+      }
+
+      if (handler_count == 0)
+        continue;
+
+      if (!cg2_handle_files_multi(mnt_ptr->dir, handlers, handler_count,
+                             CG2_FIRST_LEVEL)) {
+        ERROR(LOG_KEY "cg2_handle_files_multi failed");
+        return -1;
+      }
+
+
+      if (!cgroup_cpu_found && cpu_usage.entries_num > 0) {
+        cpu_usage.version = 1;
+        cgroup_cpu_found = true;
+        DEBUG(LOG_KEY "v1 cpu statistic found");
+      } else if (!cgroup_cpu_found) {
+        DEBUG(LOG_KEY "v1 cpu statistic disabled");
+      }
+
+      if (!cgroup_mem_found && mem_usage.entries_num > 0) {
+        mem_usage.version = 1;
+        cgroup_mem_found = true;
+        DEBUG(LOG_KEY "v1 memory statistic found");
+      } else if (!cgroup_mem_found) {
+        DEBUG(LOG_KEY "v1 memory statistic disabled");
       }
     }
   }
